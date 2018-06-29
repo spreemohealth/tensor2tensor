@@ -752,6 +752,7 @@ class T2TModel(base.Layer):
         decode_length,
         vocab_size,
         alpha,
+        eos_id = self._decode_hparams.get('eos_id',beam_search.EOS_ID),
         stop_early=(top_beams == 1))
 
     # Set inputs back to the unexpanded inputs to not to confuse the Estimator!

@@ -795,6 +795,10 @@ class ClassLabelModality(modality.Modality):
     return "class_label_modality_%d_%d" % (self._vocab_size,
                                            self._body_input_depth)
 
+  @property
+  def is_class_modality(self):
+    return True
+
   def bottom(self, x):
     with tf.variable_scope(self.name):
       return common_layers.embedding(
@@ -978,7 +982,7 @@ class SigmoidClassLabelModality(ClassLabelModality):
 
   @property
   def name(self):
-    return "sigmoid_class_symbol_modality_%d_%d" % (self._vocab_size,
+    return "class_label_sigmoid_modality_%d_%d" % (self._vocab_size,
                                                     self._body_input_depth)
 
   def loss(self, top_out, targets):
@@ -997,8 +1001,9 @@ class SigmoidMaxPoolingClassLabelModality(ClassLabelModality):
 
   @property
   def name(self):
-    return "sigmoid_max_pooling_class_symbol_modality_%d_%d" % (
+    return "class_label_sigmoid_max_pooling_modality_%d_%d" % (
         self._vocab_size, self._body_input_depth)
+  
 
   def top(self, body_output, _):
     """Transform inputs from model space to target space.
@@ -1032,7 +1037,7 @@ class SoftmaxMaxPoolingClassLabelModality(OneHotClassLabelModality):
 
   @property
   def name(self):
-    return "softmax_max_pooling_onehot_class_label_modality_%d_%d" % (
+    return "class_label_softmax_max_pooling_onehot_modality_%d_%d" % (
         self._vocab_size, self._body_input_depth)
 
   def top(self, body_output, _):
@@ -1047,7 +1052,7 @@ class SoftmaxAveragePoolingClassLabelModality(OneHotClassLabelModality):
 
   @property
   def name(self):
-    return "softmax_average_pooling_onehot_class_label_modality_%d_%d" % (
+    return "class_label_softmax_average_pooling_onehot_modality_%d_%d" % (
         self._vocab_size, self._body_input_depth)
 
   def top(self, body_output, _):
@@ -1062,7 +1067,7 @@ class SoftmaxLastTimestepClassLabelModality(OneHotClassLabelModality):
 
   @property
   def name(self):
-    return "softmax_last_timestep_onehot_class_label_modality_%d_%d" % (
+    return "class_label_softmax_last_timestep_onehot_modality_%d_%d" % (
         self._vocab_size, self._body_input_depth)
 
   def top(self, body_output, _):

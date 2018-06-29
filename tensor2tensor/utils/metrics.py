@@ -596,7 +596,8 @@ def create_evaluation_metrics(problems, model_hparams):
       for metric in metrics:
         metric_fn = METRICS_FNS[metric]
         metric_name = "metrics-%s/%s/%s" % (problem_name, target_name, metric)
-        if metric == Metrics.IMAGE_SUMMARY:
+        # if metric == Metrics.IMAGE_SUMMARY:
+        if metric.endswith('summary'):
           eval_metrics[metric_name] = make_image_wrapped_metric_fn(metric_fn)
         else:
           eval_metrics[metric_name] = make_problem_specific_metric_fn(
