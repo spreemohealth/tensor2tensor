@@ -618,15 +618,11 @@ def create_evaluation_metrics(problems, model_hparams):
         ptid = problem_instance.task_id  # pylint: disable=cell-var-from-loop
         weights_fn = weights_fn_for_mp(ptid)
 
-      for metric, metric_fn in six.iteritems(metrics):
-        overload_eval_metric_name = getattr(
-            model_hparams, "overload_eval_metric_name", None)
-        if len(problems) == 1 and overload_eval_metric_name:
-          metric_name = "metrics-%s/%s/%s" % (
-              overload_eval_metric_name, target_name, metric)
-        else:
-          metric_name = "metrics-%s/%s/%s" % (problem_name, target_name, metric)
-        if metric == Metrics.IMAGE_SUMMARY:
+      for metric in metrics:
+        metric_fn = METRICS_FNS[metric]
+        metric_name = "metrics-%s/%s/%s" % (problem_name, target_name, metric)
+        # if metric == Metrics.IMAGE_SUMMARY:
+        if metric.endswith('summary'):
           eval_metrics[metric_name] = make_image_wrapped_metric_fn(metric_fn)
         else:
           eval_metrics[metric_name] = make_problem_specific_metric_fn(

@@ -566,6 +566,10 @@ class Transformer(t2t_model.T2TModel):
             common_layers.shape_list(inputs)[1] + features.get(
                 "decode_length", decode_length))
 
+      print("feature decode_length:",common_layers.shape_list(features.get("decode_length", decode_length)))
+      print("input length:",common_layers.shape_list(inputs)[1])
+      print("decode_length:",common_layers.shape_list(decode_length))
+
       # TODO(llion): Clean up this reshaping logic.
       inputs = tf.expand_dims(inputs, axis=1)
       if len(inputs.shape) < 5:
@@ -585,7 +589,9 @@ class Transformer(t2t_model.T2TModel):
             features["target_space_id"],
             hparams,
             features=features)
+      tf.logging.warn(common_layers.shape_list(encoder_output))
       encoder_output = encoder_output[0]
+      tf.logging.warn(common_layers.shape_list(encoder_output))
       encoder_decoder_attention_bias = encoder_decoder_attention_bias[0]
       partial_targets = None
     else:
@@ -704,6 +710,7 @@ class Transformer(t2t_model.T2TModel):
         top_beams=top_beams,
         alpha=alpha,
         batch_size=batch_size,
+        eos_id=self._decode_hparams.get('eos_id',beam_search.EOS_ID),
         force_decode_length=self._decode_hparams.force_decode_length)
     if partial_targets is not None:
       if beam_size <= 1 or top_beams <= 1:
@@ -1130,6 +1137,10 @@ class TransformerScorer(Transformer):
 @registry.register_model
 class TransformerEncoder(t2t_model.T2TModel):
   """Transformer, encoder only."""
+
+  def __init__(self, *args, **kwargs):
+    super(TransformerEncoder, self).__init__(*args, **kwargs)
+    self.attention_weights = dict()  # For visualizing attention heads.
 
   def body(self, features):
     hparams = self._hparams

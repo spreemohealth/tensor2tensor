@@ -58,6 +58,8 @@ from tensor2tensor.utils import expert_utils
 
 import tensorflow as tf
 
+from tensorflow.python.util import nest
+
 
 def universal_transformer_encoder(encoder_input,
                                   encoder_self_attention_bias,
@@ -248,9 +250,47 @@ def universal_transformer_layer(x,
       ut_function, initializer = get_ut_layer(x, hparams, ffn_unit,
                                               attention_unit, pad_remover)
 
+<<<<<<< HEAD:tensor2tensor/models/research/universal_transformer_util.py
       output, _, extra_output = tf.foldl(
+<<<<<<< HEAD
           ut_function, tf.range(hparams.num_rec_steps),
           initializer=initializer)
+=======
+          ut_function, tf.range(hparams.num_rec_steps), initializer=initializer)
+=======
+      # def unstack_input_fn(layer_inputs,step):
+      #   layer_inputs = tf.tuple(tf.unstack(layer_inputs))
+      #   tuple_outputs = rt_function(layer_inputs,step)
+      #   return tf.stack(tuple_outputs)
+
+      # output, _, extra_output = tf.unstack(tf.foldl(
+      #           unstack_input_fn, tf.range(hparams.num_rec_steps), initializer=initializer))
+
+      # output_flatten = lambda x:nest.flatten(x)
+      # def output_pack(x):
+      #   return nest.pack_sequence_as(initializer,x)
+
+      # initializer_flat = output_flatten(initializer)
+
+      # def compute_fn(layer_inputs,step):
+      #   layer_inputs = output_pack(layer_inputs)
+      #   packed_out = rt_function(layer_inputs,step)
+      #   return output_flatten(packed_out)
+
+      # output, _, extra_output = output_pack(tf.foldl(
+      #           compute_fn, tf.range(hparams.num_rec_steps), initializer=initializer))
+
+      # output, _, extra_output = tf.foldl(
+      #           rt_function,tf.range(hparams.num_rec_steps),initializer=initializer)
+
+      output, _, extra_output = [res[-1] 
+                                  for res in 
+                                  tf.scan(
+                                    rt_function,tf.range(hparams.num_rec_steps),
+                                      initializer=initializer)
+                                ]
+>>>>>>> Modalities derived from ClassLabelModality are:tensor2tensor/models/research/r_transformer_util.py
+>>>>>>> 8b20c2b6... Modalities derived from ClassLabelModality are
 
       # Right now, this is only possible when the transition function is an lstm
       if (hparams.recurrence_type == "lstm" and
