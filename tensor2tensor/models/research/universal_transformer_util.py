@@ -249,34 +249,8 @@ def universal_transformer_layer(x,
       ut_function, initializer = get_ut_layer(x, hparams, ffn_unit,
                                               attention_unit, pad_remover)
 
-<<<<<<< HEAD:tensor2tensor/models/research/universal_transformer_util.py
       output, _, extra_output = tf.foldl(
           ut_function, tf.range(hparams.num_rec_steps), initializer=initializer)
-=======
-      # def unstack_input_fn(layer_inputs,step):
-      #   layer_inputs = tf.tuple(tf.unstack(layer_inputs))
-      #   tuple_outputs = rt_function(layer_inputs,step)
-      #   return tf.stack(tuple_outputs)
-
-      # output, _, extra_output = tf.unstack(tf.foldl(
-      #           unstack_input_fn, tf.range(hparams.num_rec_steps), initializer=initializer))
-
-      # output_flatten = lambda x:nest.flatten(x)
-      # def output_pack(x):
-      #   return nest.pack_sequence_as(initializer,x)
-
-      # initializer_flat = output_flatten(initializer)
-
-      # def compute_fn(layer_inputs,step):
-      #   layer_inputs = output_pack(layer_inputs)
-      #   packed_out = rt_function(layer_inputs,step)
-      #   return output_flatten(packed_out)
-
-      # output, _, extra_output = output_pack(tf.foldl(
-      #           compute_fn, tf.range(hparams.num_rec_steps), initializer=initializer))
-
-      # output, _, extra_output = tf.foldl(
-      #           rt_function,tf.range(hparams.num_rec_steps),initializer=initializer)
 
       output, _, extra_output = [res[-1] 
                                   for res in 
@@ -284,7 +258,6 @@ def universal_transformer_layer(x,
                                     rt_function,tf.range(hparams.num_rec_steps),
                                       initializer=initializer)
                                 ]
->>>>>>> Modalities derived from ClassLabelModality are:tensor2tensor/models/research/r_transformer_util.py
 
       # This is possible only when we are using lstm as transition function.
       if hparams.get("use_memory_as_final_state", False):
