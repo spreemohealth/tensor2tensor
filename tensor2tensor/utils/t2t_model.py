@@ -418,6 +418,7 @@ class T2TModel(base.Layer):
         logits = target_modality.top(body_output, features.get("targets"))
       else:
         # Take body outputs for the last position only, and targets too.
+<<<<<<< HEAD
         if "decode_loop_step" not in features:
           last_position_body_output = tf.expand_dims(
               body_output[:, -1, :, :], axis=[1])
@@ -434,6 +435,14 @@ class T2TModel(base.Layer):
           last_position_targets = tf.slice(
               features["targets"], [0, features["decode_loop_step"][0], 0, 0],
               [target_shape[0], 1, target_shape[2], target_shape[3]])
+=======
+        last_position_body_output = tf.expand_dims(
+            body_output[:, -1, :, :], axis=[1])
+        last_position_targets = features.get('targets')
+        if last_position_targets is not None:
+          last_position_targets = tf.expand_dims(
+              features["targets"][:, -1:, :, :], axis=[1])
+>>>>>>> Modalities derived from ClassLabelModality are
         logits = target_modality.top(last_position_body_output,
                                      last_position_targets)
     return logits
