@@ -251,13 +251,13 @@ def universal_transformer_layer(x,
 
       output, _, extra_output = tf.foldl(
           ut_function, tf.range(hparams.num_rec_steps), initializer=initializer)
+      # output, _, extra_output = [res[-1] 
+      #                            for res in 
+      #                            tf.scan(
+      #                              rt_function,tf.range(hparams.num_rec_steps),
+      #                                initializer=initializer)
+      #                            ]
 
-      output, _, extra_output = [res[-1] 
-                                  for res in 
-                                  tf.scan(
-                                    rt_function,tf.range(hparams.num_rec_steps),
-                                      initializer=initializer)
-                                ]
 
       # This is possible only when we are using lstm as transition function.
       if hparams.get("use_memory_as_final_state", False):
