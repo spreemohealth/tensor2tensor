@@ -252,22 +252,16 @@ def universal_transformer_layer(x,
 
       output, _, extra_output = tf.foldl(
           ut_function, tf.range(hparams.num_rec_steps), initializer=initializer)
+      # output, _, extra_output = [res[-1] 
+      #                            for res in 
+      #                            tf.scan(
+      #                              rt_function,tf.range(hparams.num_rec_steps),
+      #                                initializer=initializer)
+      #                            ]
 
-      output, _, extra_output = [res[-1] 
-                                  for res in 
-                                  tf.scan(
-                                    rt_function,tf.range(hparams.num_rec_steps),
-                                      initializer=initializer)
-                                ]
-<<<<<<< HEAD
->>>>>>> Modalities derived from ClassLabelModality are:tensor2tensor/models/research/r_transformer_util.py
->>>>>>> 8b20c2b6... Modalities derived from ClassLabelModality are
-=======
->>>>>>> b36fc052... Modalities derived from ClassLabelModality are
 
-      # Right now, this is only possible when the transition function is an lstm
-      if (hparams.recurrence_type == "lstm" and
-          hparams.get("use_memory_as_final_state", False)):
+      # This is possible only when we are using lstm as transition function.
+      if hparams.get("use_memory_as_final_state", False):
         output = extra_output
 
     if (hparams.mix_with_transformer and
