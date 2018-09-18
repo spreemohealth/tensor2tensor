@@ -570,6 +570,10 @@ class Transformer(t2t_model.T2TModel):
       print("input length:",common_layers.shape_list(inputs)[1])
       print("decode_length:",common_layers.shape_list(decode_length))
 
+      print("feature decode_length:",common_layers.shape_list(features.get("decode_length", decode_length)))
+      print("input length:",common_layers.shape_list(inputs)[1])
+      print("decode_length:",common_layers.shape_list(decode_length))
+
       # TODO(llion): Clean up this reshaping logic.
       inputs = tf.expand_dims(inputs, axis=1)
       if len(inputs.shape) < 5:
