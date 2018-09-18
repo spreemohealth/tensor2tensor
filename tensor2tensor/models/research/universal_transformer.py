@@ -273,8 +273,13 @@ class UniversalTransformer(transformer.Transformer):
 
 
 @registry.register_model
+<<<<<<< HEAD:tensor2tensor/models/research/universal_transformer.py
 class UniversalTransformerEncoder(transformer.Transformer):
   """Universal Transformer Encoder: Has no decoder (e.g.for classification)."""
+=======
+class RTransformerEncoder(transformer.TransformerEncoder):
+  """R-Transformer Encoder: Depth-wise recurrent transformer encoder-only."""
+>>>>>>> Modalities derived from ClassLabelModality are:tensor2tensor/models/research/r_transformer.py
 
   def encode(self, inputs, target_space, hparams, features=None, losses=None):
     """Encode transformer inputs.
