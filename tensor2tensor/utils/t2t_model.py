@@ -730,8 +730,23 @@ class T2TModel(base.Layer):
       losses: a dictionary: {loss-name (string): floating point `Scalar`}.
           Contains a single key "training".
     """
-    results = self._slow_greedy_infer(features, decode_length=decode_length)
-    return results["logits"], results["losses"]
+    if 'targets' in features:
+      targets_length = common_layers.shape_list(features['targets'])[1]
+      input_length = common_layers.shape_list(features['inputs'])[1]
+      decode_length = targets_length-input_length
+    self._fill_problem_hparams_features(features)
+    results = self._greedy_infer(features,targets_length-input_length)
+    logits = results['logits']
+    print('Logits:',logits)
+    losses = results.get('losses') or {}
+    if 'targets' in features:
+      if 'training' not in losses or losses['training']==0.0:
+        train_loss = self.loss(logits,features)
+        train_loss = average_sharded_losses([{'training':train_loss}])
+        losses['training'] = train_loss
+      # logits,losses_dict = model.eval_autoregressive(features)
+    print('Losses Dict: ',losses)
+    return logits, losses['training']
 
   def _fill_problem_hparams_features(self, features):
     if features is not None:
@@ -1288,7 +1303,7 @@ class T2TModel(base.Layer):
       features: an map of string to `Tensor`.
 
     Returns:
-       samples: an integer `Tensor`.
+       samples: an integer `Tensor`. 
        logits: a list of `Tensor`s, one per datashard.
        losses: a dictionary: {loss-name (string): floating point `Scalar`}.
     """
@@ -1426,8 +1441,18 @@ class T2TModel(base.Layer):
       return model.estimator_spec_predict(features, use_tpu=use_tpu)
 
     # TRAIN and EVAL modes
-    if hparams.eval_run_autoregressive and mode == tf.estimator.ModeKeys.EVAL:
+    if hparams.eval_run_autoregressive and (mode == tf.estimator.ModeKeys.EVAL):
       logits, losses_dict = model.eval_autoregressive(features)
+    elif hparams.eval_run_autoregressive and (mode == tf.estimator.ModeKeys.TRAIN):
+      # targets_length = common_layers.shape_list(features['targets'])[1]
+      # input_length = common_layers.shape_list(features['inputs'])[1]
+      # model._fill_problem_hparams_features(features)
+      # logits = model._greedy_infer(features,targets_length-input_length)['logits']
+      logits,losses_dict = model.eval_autoregressive(features)
+      # print('Logits:',logits)
+      # losses_dict = {'training' : model.loss(logits,features)}
+      # losses_dict = average_sharded_losses([losses_dict])
+      # print('Losses Dict: ',losses_dict)
     else:
       logits, losses_dict = model(features)  # pylint: disable=not-callable
 
