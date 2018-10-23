@@ -923,7 +923,7 @@ def fast_decode(encoder_output,
       scores = scores[:, :top_beams]
   else:  # Greedy
 
-    def inner_loop(i, hit_eos, next_id, decoded_ids, cache, log_prob):
+    def inner_loop(i, hit_eos, next_id, decoded_ids, cache, log_prob,logit_seq):
       """One step of greedy decoding."""
       logits, cache = symbols_to_logits_fn(next_id, i, cache)
       log_probs = common_layers.log_prob_from_logits(logits)
@@ -938,7 +938,9 @@ def fast_decode(encoder_output,
 
       next_id = tf.expand_dims(next_id, axis=1)
       decoded_ids = tf.concat([decoded_ids, next_id], axis=1)
-      return i + 1, hit_eos, next_id, decoded_ids, cache, log_prob
+      logits = tf.reshape(logits,[-1,1,1,1,vocab_size])
+      logit_seq = tf.concat([logit_seq,logits],axis=1)
+      return i + 1, hit_eos, next_id, decoded_ids, cache, log_prob,logit_seq
 
     def is_not_finished(i, hit_eos, *_):
       finished = i >= decode_length
@@ -950,11 +952,12 @@ def fast_decode(encoder_output,
     hit_eos = tf.fill([batch_size], False)
     next_id = sos_id * tf.ones([batch_size, 1], dtype=tf.int64)
     initial_log_prob = tf.zeros([batch_size], dtype=tf.float32)
-    _, _, _, decoded_ids, _, log_prob = tf.while_loop(
+    initial_logits = tf.zeros([batch_size,0,1,1,vocab_size])
+    _, _, _, decoded_ids, _, log_prob,logits = tf.while_loop(
         is_not_finished,
         inner_loop, [
             tf.constant(0), hit_eos, next_id, decoded_ids, cache,
-            initial_log_prob
+            initial_log_prob,initial_logits
         ],
         shape_invariants=[
             tf.TensorShape([]),
@@ -963,8 +966,10 @@ def fast_decode(encoder_output,
             tf.TensorShape([None, None]),
             nest.map_structure(beam_search.get_state_shape_invariants, cache),
             tf.TensorShape([None]),
+            tf.TensorShape([None, None,1,1,vocab_size]),
         ])
     scores = log_prob
+    return {"outputs": decoded_ids, "scores": scores,'logits':logits}
 
   return {"outputs": decoded_ids, "scores": scores}
 
