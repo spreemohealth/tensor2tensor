@@ -363,7 +363,7 @@ def set_recall(predictions, labels, weights_fn=common_layers.weights_nonzero):
     return tf.to_float(tf.equal(labels, predictions)), weights
 
 
-def image_summary(predictions, targets, hparams):
+def image_summary(predictions, targets, hparams,weights_fn=common_layers.weights_nonzero):
   """Reshapes predictions and passes it to tensorboard.
 
   Args:
@@ -376,6 +376,7 @@ def image_summary(predictions, targets, hparams):
     weights: A Tensor of zeros of the same shape as predictions.
   """
   del hparams
+  del weights_fn
   results = tf.cast(tf.argmax(predictions, axis=-1), tf.uint8)
   gold = tf.cast(targets, tf.uint8)
   summary1 = tf.summary.image("prediction", results, max_outputs=2)
@@ -533,7 +534,7 @@ def create_evaluation_metrics(problems, model_hparams):
           labels, [labels_shape[0], labels_shape[1], -1])
     return predictions, labels
 
-  def make_problem_specific_metric_fn(metric_fn, weights_fn):
+  def make_problem_specific_metric_fn(metric_fn, weights_fn,name):
     """Create a metric fn."""
 
     def problem_metric_fn(predictions, features, labels):
@@ -547,23 +548,28 @@ def create_evaluation_metrics(problems, model_hparams):
 
       predictions, labels = reduce_dimensions(predictions, labels)
 
-      scores, weights = metric_fn(predictions, labels,
-                                  weights_fn=weights_fn, **kwargs)
-      return tf.metrics.mean(scores, weights)
+      with tf.variable_scope(name,
+                         values=[predictions, labels]):
+
+        scores, weights = metric_fn(predictions, labels,
+                                    weights_fn=weights_fn, **kwargs)
+        return tf.metrics.mean(scores, weights)
 
     return problem_metric_fn
 
-  def make_image_wrapped_metric_fn(metric_fn):
+  def make_image_wrapped_metric_fn(metric_fn,name,weights_fn=common_layers.weights_all):
     """Metric fn without tf.metrics.mean."""
 
     def image_wrapped_metric_fn(predictions,
                                 features,
-                                labels,
-                                weights_fn=common_layers.weights_all):
-      del weights_fn
+                                labels):
+      # del weights_fn
       del features
+
       predictions, labels = reduce_dimensions(predictions, labels)
-      return metric_fn(predictions, labels, model_hparams)
+      with tf.variable_scope(name,
+                         values=[predictions, labels]):
+        return metric_fn(predictions, labels, model_hparams,weights_fn)
 
     return image_wrapped_metric_fn
 
@@ -598,10 +604,11 @@ def create_evaluation_metrics(problems, model_hparams):
         metric_name = "metrics-%s/%s/%s" % (problem_name, target_name, metric)
         # if metric == Metrics.IMAGE_SUMMARY:
         if metric.endswith('summary'):
-          eval_metrics[metric_name] = make_image_wrapped_metric_fn(metric_fn)
+          eval_metrics[metric_name] = make_image_wrapped_metric_fn(metric_fn,metric_name,
+            weights_fn)
         else:
           eval_metrics[metric_name] = make_problem_specific_metric_fn(
-              metric_fn, weights_fn)
+              metric_fn, weights_fn,metric_name)
 
   return eval_metrics
 

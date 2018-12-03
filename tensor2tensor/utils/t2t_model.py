@@ -606,7 +606,7 @@ class T2TModel(base.Layer):
       if 'training' not in losses or losses['training']==0.0:
         train_loss = self.loss(logits,features)
         train_loss = average_sharded_losses([{'training':train_loss}])
-        losses['training'] = train_loss
+        losses['training'] = train_loss['training']
       # logits,losses_dict = model.eval_autoregressive(features)
     print('Losses Dict: ',losses)
     return logits, losses['training']
