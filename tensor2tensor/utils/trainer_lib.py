@@ -335,9 +335,11 @@ def create_hooks(use_tfdbg=False,
   eval_hooks = []
 
   if use_tfdbg:
-    hook = debug.LocalCLIDebugHook()
+    #hook = debug.LocalCLIDebugHook()
+    hook = debug.TensorBoardDebugHook('127.0.0.1:9990',send_traceback_and_source_code=False)
     train_hooks.append(hook)
     eval_hooks.append(hook)
+    
 
   if use_dbgprofile:
     # Recorded traces can be visualized with chrome://tracing/
@@ -682,6 +684,8 @@ def create_experiment(
   exporter = None
   if export:
     def compare_fn(best_eval_result, current_eval_result):
+      print("Current: ",current_eval_result)
+      print("Best: ",best_eval_result)
       metric = eval_early_stopping_metric or "loss"
       return current_eval_result[metric] < best_eval_result[metric]
 
