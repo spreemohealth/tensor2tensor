@@ -875,6 +875,8 @@ class OneHotClassLabelModality(ClassLabelModality):
     Returns:
       loss_scale (cross-entropy), loss_denom
     """
+    print('Targets: ',targets)
+    print('Logits: ',top_out)
     loss_scale = tf.losses.softmax_cross_entropy(
         onehot_labels=targets, logits=top_out)
     weights = self.targets_weights_fn(targets)
