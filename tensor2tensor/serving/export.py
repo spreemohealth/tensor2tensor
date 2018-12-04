@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Export a trained model for serving."""
 from __future__ import absolute_import
 from __future__ import division
@@ -37,21 +38,42 @@ tf.flags.DEFINE_string(
     "If None, the model will be stored in subdirectory "
     "where checkpoints are: --output_dir")
 
+tf.flags.DEFINE_string(
+    "checkpoint_path", None, "Which checkpoint to export."
+    "If None, we will use the latest checkpoint stored in the directory "
+    "specified by --output_dir")
+
+
+def _get_hparams_path():
+  """Get hyper-parameters file path."""
+  hparams_path = None
+  if FLAGS.output_dir:
+    hparams_path = os.path.join(FLAGS.output_dir, "hparams.json")
+  else:
+    tf.logging.warning(
+        "--output_dir not specified. Hyper-parameters will be infered from"
+        "--hparams_set and --hparams only. These may not match training time"
+        "hyper-parameters.")
+  return hparams_path
+
 
 def create_estimator(run_config, hparams):
   return trainer_lib.create_estimator(
       FLAGS.model,
       hparams,
       run_config,
-      decode_hparams=decoding.decode_hparams(FLAGS.decode_hparams))
+      decode_hparams=decoding.decode_hparams(FLAGS.decode_hparams),
+      use_tpu=FLAGS.use_tpu)
 
 
 def create_hparams():
+  """Create hyper-parameters object."""
   return trainer_lib.create_hparams(
       FLAGS.hparams_set,
       FLAGS.hparams,
       data_dir=os.path.expanduser(FLAGS.data_dir),
-      problem_name=FLAGS.problem)
+      problem_name=FLAGS.problem,
+      hparams_path=_get_hparams_path())
 
 
 # TODO(michalski): Move this method into tfhub utils.
@@ -78,7 +100,12 @@ def export_module_spec_with_checkpoint(module_spec,
       m.export(export_path, session)
 
 
-def export_as_tfhub_module(hparams, problem, ckpt_dir, export_dir):
+def export_as_tfhub_module(model_name,
+                           hparams,
+                           decode_hparams,
+                           problem,
+                           checkpoint_path,
+                           export_dir):
   """Exports the last checkpoint from the directory as tfhub module.
 
   It creates the Module spec and signature (based on T2T problem information),
@@ -86,18 +113,21 @@ def export_as_tfhub_module(hparams, problem, ckpt_dir, export_dir):
   Module will be saved inside the ckpt_dir.
 
   Args:
+    model_name: name of the model to be exported.
     hparams: T2T parameters, model graph will be based on them.
+    decode_hparams: T2T parameters for decoding.
     problem: the name of the problem
-    ckpt_dir: directory with the checkpoints.
+    checkpoint_path: path to the checkpoint to be exported.
     export_dir: Directory to write the exported model to.
   """
 
   def hub_module_fn():
     """Creates the TF graph for the hub module."""
     model_fn = t2t_model.T2TModel.make_estimator_model_fn(
-        FLAGS.model,
+        model_name,
         hparams,
-        decode_hparams=decoding.decode_hparams(FLAGS.decode_hparams))
+        decode_hparams=decode_hparams,
+        use_tpu=FLAGS.use_tpu)
     features = problem.serving_input_fn(hparams).features
 
     # we must do a copy of the features, as the model_fn can add additional
@@ -109,14 +139,16 @@ def export_as_tfhub_module(hparams, problem, ckpt_dir, export_dir):
         inputs=original_features,
         outputs=spec.export_outputs["serving_default"].outputs)
 
-  # TFHub doesn't support LOSSES collections.
+  # TFHub doesn't support the following collections.
+  drop_collections = [tf.GraphKeys.LOSSES,
+                      tf.GraphKeys.SUMMARIES, tf.GraphKeys.LOCAL_VARIABLES]
   module_spec = hub.create_module_spec(
-      hub_module_fn, drop_collections=[tf.GraphKeys.LOSSES])
+      hub_module_fn, drop_collections=drop_collections)
   # Loads the weights from the checkpoint using the model above
   # and saves it in the export_path.
   export_module_spec_with_checkpoint(
       module_spec,
-      checkpoint_path=tf.train.latest_checkpoint(ckpt_dir),
+      checkpoint_path=checkpoint_path,
       export_path=export_dir,
       scope_prefix="")
 
@@ -126,7 +158,12 @@ def main(_):
   trainer_lib.set_random_seed(FLAGS.random_seed)
   usr_dir.import_usr_dir(FLAGS.t2t_usr_dir)
 
-  ckpt_dir = os.path.expanduser(FLAGS.output_dir)
+  if FLAGS.checkpoint_path:
+    checkpoint_path = FLAGS.checkpoint_path
+    ckpt_dir = os.path.dirname(checkpoint_path)
+  else:
+    ckpt_dir = os.path.expanduser(FLAGS.output_dir)
+    checkpoint_path = tf.train.latest_checkpoint(ckpt_dir)
 
   hparams = create_hparams()
   hparams.no_data_parallelism = True  # To clear the devices
@@ -135,7 +172,10 @@ def main(_):
   export_dir = FLAGS.export_dir or os.path.join(ckpt_dir, "export")
 
   if FLAGS.export_as_tfhub:
-    export_as_tfhub_module(hparams, problem, ckpt_dir, export_dir)
+    checkpoint_path = tf.train.latest_checkpoint(ckpt_dir)
+    decode_hparams = decoding.decode_hparams(FLAGS.decode_hparams)
+    export_as_tfhub_module(FLAGS.model, hparams, decode_hparams, problem,
+                           checkpoint_path, export_dir)
     return
 
   run_config = t2t_trainer.create_run_config(hparams)
@@ -148,7 +188,7 @@ def main(_):
   exporter.export(
       estimator,
       export_dir,
-      checkpoint_path=tf.train.latest_checkpoint(ckpt_dir),
+      checkpoint_path=checkpoint_path,
       eval_result=None,
       is_the_final_export=True)
 

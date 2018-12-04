@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Utilities for Universal Transformer.
 
 The Universal Transformer is based on the popular encoder-decoder architecture.
@@ -126,8 +127,6 @@ def universal_transformer_encoder(encoder_input,
     x, extra_output = universal_transformer_layer(
         x, hparams, ffn_unit, attention_unit, pad_remover=pad_remover)
 
-    if hparams.get("use_memory_as_last_state", False):
-      x = extra_output  # which is memory
     return common_layers.layer_preprocess(x, hparams), extra_output
 
 
@@ -258,8 +257,9 @@ def universal_transformer_layer(x,
       #                                initializer=initializer)
       #                            ]
 
-      # This is possible only when we are using lstm as transition function.
-      if hparams.get("use_memory_as_final_state", False):
+      # Right now, this is only possible when the transition function is an lstm
+      if (hparams.recurrence_type == "lstm" and
+          hparams.get("use_memory_as_final_state", False)):
         output = extra_output
 
     if hparams.mix_with_transformer == "after_ut":
@@ -1141,7 +1141,7 @@ def universal_transformer_act_basic(x, hparams, ffn_unit, attention_unit):
           use_bias=True,
           bias_initializer=tf.constant_initializer(
               hparams.act_halting_bias_init))
-      p = tf.squeeze(p)
+      p = tf.squeeze(p, axis=-1)
 
     # Mask for inputs which have not halted yet
     still_running = tf.cast(tf.less(halting_probability, 1.0), tf.float32)
@@ -1190,7 +1190,7 @@ def universal_transformer_act_basic(x, hparams, ffn_unit, attention_unit):
           state_shape[0],
           state_shape[1],
       ])
-      new_state.set_shape(state_shape)
+    new_state.set_shape(state_shape)
     step += 1
     return (transformed_state, step, halting_probability, remainders, n_updates,
             new_state)
@@ -1293,7 +1293,7 @@ def universal_transformer_act_accumulated(x, hparams, ffn_unit, attention_unit):
           use_bias=True,
           bias_initializer=tf.constant_initializer(
               hparams.act_halting_bias_init))
-      p = tf.squeeze(p)
+      p = tf.squeeze(p, axis=-1)
 
     # Mask for inputs which have not halted yet
     still_running = tf.cast(tf.less(halting_probability, 1.0), tf.float32)
@@ -1480,7 +1480,7 @@ def universal_transformer_act_global(x, hparams, ffn_unit, attention_unit):
       x.set_shape([
           state_shape[0],
       ])
-      new_state.set_shape(state_shape)
+    new_state.set_shape(state_shape)
 
     step += 1
     return [
@@ -1628,7 +1628,7 @@ def universal_transformer_act_random(x, hparams, ffn_unit, attention_unit):
           state_shape[0],
           state_shape[1],
       ])
-      new_state.set_shape(state_shape)
+    new_state.set_shape(state_shape)
     step += 1
     return [
         transformed_state, step, halting_probability, remainders, n_updates,

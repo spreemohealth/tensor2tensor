@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 r"""Decode from trained T2T models.
 
 This binary performs inference using the Estimator API.
@@ -71,7 +72,10 @@ def create_decode_hparams():
   decode_hp = decoding.decode_hparams(FLAGS.decode_hparams)
   decode_hp.shards = FLAGS.decode_shards
   decode_hp.shard_id = FLAGS.worker_id
-  decode_hp.decode_in_memory = FLAGS.decode_in_memory
+  decode_in_memory = FLAGS.decode_in_memory or decode_hp.decode_in_memory
+  decode_hp.decode_in_memory = decode_in_memory
+  decode_hp.decode_to_file = FLAGS.decode_to_file
+  decode_hp.decode_reference = FLAGS.decode_reference
   return decode_hp
 
 

@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Wikipedia Summarization Problems."""
 
 from __future__ import absolute_import
@@ -32,6 +33,7 @@ from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import tokenizer
 from tensor2tensor.data_generators.wikisum import utils as cc_utils
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import metrics
 from tensor2tensor.utils import registry
 import tensorflow as tf
@@ -83,12 +85,14 @@ class WikisumBase(problem.Problem):
     p = defaults
     p.stop_at_eos = True
 
-    source_vocab_size = self._encoders["inputs"].vocab_size
-    target_vocab_size = self._encoders["targets"].vocab_size
-    p.input_modality = {
-        "inputs": (registry.Modalities.SYMBOL, source_vocab_size)
+    p.vocab_size = {
+        "inputs": self._encoders["inputs"].vocab_size,
+        "targets": self._encoders["targets"].vocab_size,
     }
-    p.target_modality = (registry.Modalities.SYMBOL, target_vocab_size)
+    p.modality = {
+        "inputs": modalities.SymbolModality,
+        "targets": modalities.SymbolModality,
+    }
 
   def eval_metrics(self):
     return super(WikisumBase, self).eval_metrics() + [

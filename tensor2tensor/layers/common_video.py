@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Layers common to multiple models."""
+
+"""Utilities for video."""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -39,7 +41,7 @@ def encode_to_shape(inputs, shape, scope):
   with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
     w, h = shape[1], shape[2]
     x = inputs
-    x = tf.contrib.layers.flatten(x)
+    x = tfl.flatten(x)
     x = tfl.dense(x, w * h, activation=None, name="enc_dense")
     x = tf.reshape(x, (-1, w, h, 1))
     return x
@@ -49,7 +51,7 @@ def decode_to_shape(inputs, shape, scope):
   """Encode the given tensor to given image shape."""
   with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
     x = inputs
-    x = tf.contrib.layers.flatten(x)
+    x = tfl.flatten(x)
     x = tfl.dense(x, shape[2], activation=None, name="dec_dense")
     x = tf.expand_dims(x, axis=1)
     return x
@@ -144,6 +146,49 @@ def scheduled_sample_count(ground_truth_x,
   return output
 
 
+def inject_additional_input(layer, inputs, name, mode="concat"):
+  """Injects the additional input into the layer.
+
+  Args:
+    layer: layer that the input should be injected to.
+    inputs: inputs to be injected.
+    name: TF scope name.
+    mode: how the infor should be added to the layer:
+      "concat" concats as additional channels.
+      "multiplicative" broadcasts inputs and multiply them to the channels.
+      "multi_additive" broadcasts inputs and multiply and add to the channels.
+
+  Returns:
+    updated layer.
+
+  Raises:
+    ValueError: in case of unknown mode.
+  """
+  layer_shape = common_layers.shape_list(layer)
+  input_shape = common_layers.shape_list(inputs)
+  zeros_mask = tf.zeros(layer_shape, dtype=tf.float32)
+  if mode == "concat":
+    emb = encode_to_shape(inputs, layer_shape, name)
+    layer = tf.concat(values=[layer, emb], axis=-1)
+  elif mode == "multiplicative":
+    filters = layer_shape[-1]
+    input_reshaped = tf.reshape(inputs, [-1, 1, 1, input_shape[-1]])
+    input_mask = tf.layers.dense(input_reshaped, filters, name=name)
+    input_broad = input_mask + zeros_mask
+    layer *= input_broad
+  elif mode == "multi_additive":
+    filters = layer_shape[-1]
+    input_reshaped = tf.reshape(inputs, [-1, 1, 1, input_shape[-1]])
+    input_mul = tf.layers.dense(input_reshaped, filters, name=name + "_mul")
+    layer *= tf.nn.sigmoid(input_mul)
+    input_add = tf.layers.dense(input_reshaped, filters, name=name + "_add")
+    layer += input_add
+  else:
+    raise ValueError("Unknown injection mode: %s" % mode)
+
+  return layer
+
+
 def scheduled_sample_prob(ground_truth_x,
                           generated_x,
                           batch_size,
@@ -160,11 +205,8 @@ def scheduled_sample_prob(ground_truth_x,
   """
   probability_threshold = scheduled_sample_var
   probability_of_generated = tf.random_uniform([batch_size])
-  array_ind = tf.to_int32(probability_of_generated > probability_threshold)
-  indices = tf.range(batch_size) + array_ind * batch_size
-  xy = tf.concat([ground_truth_x, generated_x], axis=0)
-  output = tf.gather(xy, indices)
-  return output
+  return tf.where(probability_of_generated > probability_threshold,
+                  generated_x, ground_truth_x)
 
 
 def dna_transformation(prev_image, dna_input, dna_kernel_size, relu_shift):
@@ -257,7 +299,8 @@ def vgg_layer(inputs,
               kernel_size=3,
               activation=tf.nn.leaky_relu,
               padding="SAME",
-              is_training=False,
+              is_training=True,
+              has_batchnorm=False,
               scope=None):
   """A layer of VGG network with batch norm.
 
@@ -268,6 +311,7 @@ def vgg_layer(inputs,
     activation: activation function
     padding: padding of the image
     is_training: whether it is training mode or not
+    has_batchnorm: whether batchnorm is applied or not
     scope: variable scope of the op
   Returns:
     net: output of layer
@@ -275,7 +319,8 @@ def vgg_layer(inputs,
   with tf.variable_scope(scope):
     net = tfl.conv2d(inputs, nout, kernel_size=kernel_size, padding=padding,
                      activation=None, name="conv")
-    net = tfl.batch_normalization(net, training=is_training, name="bn")
+    if has_batchnorm:
+      net = tfl.batch_normalization(net, training=is_training, name="bn")
     net = activation(net)
   return net
 
@@ -298,7 +343,6 @@ def tile_and_concat(image, latent, concat_latent=True):
   latent_shape = common_layers.shape_list(latent)
   height, width = image_shape[1], image_shape[2]
   latent_dims = latent_shape[1]
-
   height_multiples = height // latent_dims
   pad = height - (height_multiples * latent_dims)
   latent = tf.reshape(latent, (-1, latent_dims, 1, 1))
@@ -321,7 +365,7 @@ def _encode_gif(images, fps):
   Raises:
     IOError: If the ffmpeg command returns an error.
   """
-  writer = VideoWriter(fps)
+  writer = WholeVideoWriter(fps)
   writer.write_multi(images)
   return writer.finish()
 
@@ -435,9 +479,11 @@ def gif_summary(name, tensor, max_outputs=3, fps=10, collections=None,
 
 
 
-def tinyify(array, tiny_mode):
+def tinyify(array, tiny_mode, small_mode):
   if tiny_mode:
     return [1 for _ in array]
+  if small_mode:
+    return [max(x // 4, 1) for x in array]
   return array
 
 
@@ -448,7 +494,8 @@ def get_gaussian_tensor(mean, log_var):
 
 
 def conv_latent_tower(images, time_axis, latent_channels=1, min_logvar=-5,
-                      is_training=False, random_latent=False, tiny_mode=False):
+                      is_training=False, random_latent=False,
+                      tiny_mode=False, small_mode=False):
   """Builds convolutional latent tower for stochastic model.
 
   At training time this tower generates a latent distribution (mean and std)
@@ -466,12 +513,17 @@ def conv_latent_tower(images, time_axis, latent_channels=1, min_logvar=-5,
     min_logvar: minimum value for log_var
     is_training: whether or not it is training mode
     random_latent: whether or not generate random latents
-    tiny_mode: whether or not it is tiny_mode
+    tiny_mode: whether or not it is tiny_mode. tiny_mode sets the number
+        of conv channels to 1 at each layer. useful for testing the
+        integration tests.
+    small_mode: whether or not it is small_mode. small mode is the same model
+        with less conv and lstm layers and also lower number of channels.
+        suitable for videos with less complexity and testing.
   Returns:
     latent_mean: predicted latent mean
     latent_logvar: predicted latent log variance
   """
-  conv_size = tinyify([32, 64, 64], tiny_mode)
+  conv_size = tinyify([32, 64, 64], tiny_mode, small_mode)
   with tf.variable_scope("latent", reuse=tf.AUTO_REUSE):
     images = tf.to_float(images)
     images = tf.unstack(images, axis=time_axis)
@@ -482,9 +534,10 @@ def conv_latent_tower(images, time_axis, latent_channels=1, min_logvar=-5,
     x = tfl.conv2d(x, conv_size[0], [3, 3], strides=(2, 2),
                    padding="SAME", activation=tf.nn.relu, name="latent_conv1")
     x = tfcl.layer_norm(x)
-    x = tfl.conv2d(x, conv_size[1], [3, 3], strides=(2, 2),
-                   padding="SAME", activation=tf.nn.relu, name="latent_conv2")
-    x = tfcl.layer_norm(x)
+    if not small_mode:
+      x = tfl.conv2d(x, conv_size[1], [3, 3], strides=(2, 2),
+                     padding="SAME", activation=tf.nn.relu, name="latent_conv2")
+      x = tfcl.layer_norm(x)
     x = tfl.conv2d(x, conv_size[2], [3, 3], strides=(1, 1),
                    padding="SAME", activation=tf.nn.relu, name="latent_conv3")
     x = tfcl.layer_norm(x)
@@ -545,16 +598,103 @@ def beta_schedule(schedule, global_step, final_beta, decay_start, decay_end):
   return beta
 
 
-class VideoWriter(object):
-  """Helper class for writing videos."""
+def extract_random_video_patch(videos, num_frames=-1):
+  """For every video, extract a random consecutive patch of num_frames.
 
-  def __init__(self, fps, file_format="gif"):
+  Args:
+    videos: 5-D Tensor, (NTHWC)
+    num_frames: Integer, if -1 then the entire video is returned.
+  Returns:
+    video_patch: 5-D Tensor, (NTHWC) with T = num_frames.
+  Raises:
+    ValueError: If num_frames is greater than the number of total frames in
+                the video.
+  """
+  if num_frames == -1:
+    return videos
+  batch_size, num_total_frames, h, w, c = common_layers.shape_list(videos)
+  if num_total_frames < num_frames:
+    raise ValueError("Expected num_frames <= %d, got %d" %
+                     (num_total_frames, num_frames))
+
+  # Randomly choose start_inds for each video.
+  frame_start = tf.random_uniform(
+      shape=(batch_size,), minval=0, maxval=num_total_frames - num_frames + 1,
+      dtype=tf.int32)
+
+  # [start[0], start[0] + 1, ... start[0] + num_frames - 1] + ...
+  # [start[batch_size-1], ... start[batch_size-1] + num_frames - 1]
+  range_inds = tf.expand_dims(tf.range(num_frames), axis=0)
+  frame_inds = range_inds + tf.expand_dims(frame_start, axis=1)
+  frame_inds = tf.reshape(frame_inds, [-1])
+
+  # [0]*num_frames + [1]*num_frames + ... [batch_size-1]*num_frames
+  batch_inds = tf.expand_dims(tf.range(batch_size), axis=1)
+  batch_inds = tf.tile(batch_inds, [1, num_frames])
+  batch_inds = tf.reshape(batch_inds, [-1])
+
+  gather_inds = tf.stack((batch_inds, frame_inds), axis=1)
+  video_patches = tf.gather_nd(videos, gather_inds)
+  return tf.reshape(video_patches, (batch_size, num_frames, h, w, c))
+
+
+class VideoWriter(object):
+  """Base helper class for writing videos."""
+
+  def write(self, frame, encoded_frame=None):
+    """Writes a single video frame."""
+    raise NotImplementedError
+
+  def write_multi(self, frames, encoded_frames=None):
+    """Writes multiple video frames."""
+    if encoded_frames is None:
+      # Infinite iterator.
+      encoded_frames = iter(lambda: None, 1)
+    for (frame, encoded_frame) in zip(frames, encoded_frames):
+      self.write(frame, encoded_frame)
+
+  def finish(self):
+    """Finishes writing frames and returns output, if any.
+
+    Frees any resources acquired by the writer.
+    """
+    pass
+
+  def save_to_disk(self, output):
+    """Saves output to disk.
+
+    Args:
+      output: result of finish().
+    """
+    raise NotImplementedError
+
+  def finish_to_disk(self):
+    """Finishes writing frames and saves output to disk, if any."""
+    output = self.finish()  # pylint: disable=assignment-from-no-return
+    if output is not None:
+      self.save_to_disk(output)
+
+  def __del__(self):
+    """Frees any resources acquired by the writer."""
+    self.finish()
+
+
+class WholeVideoWriter(VideoWriter):
+  """Helper class for writing whole videos."""
+
+  def __init__(self, fps, output_path=None, file_format="gif"):
     self.fps = fps
+    self.output_path = output_path
     self.file_format = file_format
     self.proc = None
+    self._out_chunks = []
+    self._err_chunks = []
+    self._out_thread = None
+    self._err_thread = None
 
   def __init_ffmpeg(self, image_shape):
     """Initializes ffmpeg to write frames."""
+    import itertools  # pylint: disable=g-import-not-at-top
     from subprocess import Popen, PIPE  # pylint: disable=g-import-not-at-top,g-multiple-import
     ffmpeg = "ffmpeg"
     height, width, channels = image_shape
@@ -566,27 +706,70 @@ class VideoWriter(object):
         "-s", "%dx%d" % (width, height),
         "-pix_fmt", {1: "gray", 3: "rgb24"}[channels],
         "-i", "-",
-        "-filter_complex", "[0:v]split[x][z];[z]palettegen[y];[x][y]paletteuse",
+        "-filter_complex", "[0:v]split[x][z];[x]fifo[w];[z]palettegen,fifo[y];"
+                           "[w][y]paletteuse,fifo",
         "-r", "%.02f" % self.fps,
         "-f", self.file_format,
         "-qscale", "0",
         "-"
     ]
-    self.proc = Popen(self.cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    self.proc = Popen(
+        self.cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE, bufsize=-1
+    )
+    (self._out_thread, self._err_thread) = itertools.starmap(
+        self._start_reader_thread, [
+            (self.proc.stdout, self._out_chunks),
+            (self.proc.stderr, self._err_chunks)
+        ]
+    )
 
-  def write(self, frame):
+  def _start_reader_thread(self, stream, chunks):
+    """Starts a thread for reading output from FFMPEG.
+
+    The thread reads consecutive chunks from the stream and saves them in
+    the given list.
+
+    Args:
+      stream: output stream of the FFMPEG process.
+      chunks: list to save output chunks to.
+
+    Returns:
+      Thread
+    """
+    import io  # pylint: disable=g-import-not-at-top
+    import threading  # pylint: disable=g-import-not-at-top
+    def target():
+      while True:
+        chunk = stream.read(io.DEFAULT_BUFFER_SIZE)
+        if not chunk:
+          break
+        chunks.append(chunk)
+    thread = threading.Thread(target=target)
+    thread.start()
+    return thread
+
+  def write(self, frame, encoded_frame=None):
     if self.proc is None:
       self.__init_ffmpeg(frame.shape)
     self.proc.stdin.write(frame.tostring())
 
-  def write_multi(self, frames):
-    for frame in frames:
-      self.write(frame)
-
   def finish(self):
+    """Finishes transconding and returns the video.
+
+    Returns:
+      bytes
+
+    Raises:
+      IOError: in case of transcoding error.
+    """
     if self.proc is None:
       return None
-    out, err = self.proc.communicate()
+    self.proc.stdin.close()
+    for thread in (self._out_thread, self._err_thread):
+      thread.join()
+    (out, err) = [
+        b"".join(chunks) for chunks in (self._out_chunks, self._err_chunks)
+    ]
     if self.proc.returncode:
       err = "\n".join([" ".join(self.cmd), err.decode("utf8")])
       raise IOError(err)
@@ -594,40 +777,58 @@ class VideoWriter(object):
     self.proc = None
     return out
 
-  def finish_to_file(self, path):
-    out = self.finish()
-    if out is not None:
-      with tf.gfile.Open(path, "w") as f:
-        f.write(out)
+  def save_to_disk(self, output):
+    if self.output_path is None:
+      raise ValueError(
+          "This writer doesn't support saving to disk (output_path not "
+          "specified)."
+      )
+    with tf.gfile.Open(self.output_path, "w") as f:
+      f.write(output)
 
-  def __del__(self):
-    self.finish()
 
-
-class BatchVideoWriter(object):
+class BatchWholeVideoWriter(VideoWriter):
   """Helper class for writing videos in batch."""
 
-  def __init__(self, fps, file_format="gif"):
+  def __init__(self, fps, path_template, file_format="gif"):
     self.fps = fps
+    self.path_template = path_template
     self.file_format = file_format
     self.writers = None
 
-  def write(self, batch_frame):
+  def write(self, batch_frame, batch_encoded_frame=None):
+    del batch_encoded_frame
     if self.writers is None:
       self.writers = [
-          VideoWriter(self.fps, self.file_format) for _ in batch_frame]
+          WholeVideoWriter(
+              self.fps, self.path_template.format(i), self.file_format
+          )
+          for i in range(len(batch_frame))
+      ]
     for i, frame in enumerate(batch_frame):
       self.writers[i].write(frame)
-
-  def write_multi(self, batch_frames):
-    for batch_frame in batch_frames:
-      self.write(batch_frame)
 
   def finish(self):
     outs = [w.finish() for w in self.writers]
     return outs
 
-  def finish_to_files(self, path_template):
-    for i, writer in enumerate(self.writers):
-      path = path_template.format(i)
-      writer.finish_to_file(path)
+  def save_to_disk(self, outputs):
+    for (writer, output) in zip(self.writers, outputs):
+      writer.save_to_disk(output)
+
+
+class IndividualFrameWriter(VideoWriter):
+  """Helper class for writing individual video frames."""
+
+  def __init__(self, output_dir):
+    self.output_dir = output_dir
+    self._counter = 0
+
+  def write(self, frame=None, encoded_frame=None):
+    import os  # pylint: disable=g-import-not-at-top
+    if encoded_frame is None:
+      raise ValueError("This writer only supports encoded frames.")
+    path = os.path.join(self.output_dir, "frame_%05d.png" % self._counter)
+    with tf.gfile.Open(path, "wb") as f:
+      f.write(encoded_frame)
+      self._counter += 1

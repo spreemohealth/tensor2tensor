@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Data generators for translation data-sets."""
 
 from __future__ import absolute_import
@@ -25,6 +26,7 @@ from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import text_problems
 from tensor2tensor.data_generators import translate
+from tensor2tensor.data_generators import wiki_lm
 from tensor2tensor.utils import registry
 
 import tensorflow as tf
@@ -151,3 +153,12 @@ class TranslateEndeWmtCharacters(TranslateEndeWmt8k):
   @property
   def vocab_type(self):
     return text_problems.VocabType.CHARACTER
+
+
+@registry.register_problem
+class TranslateEndeWmtMulti64k(TranslateEndeWmt8k):
+  """Translation with muli-lingual vocabulary."""
+
+  @property
+  def vocab_filename(self):
+    return wiki_lm.LanguagemodelDeEnFrRoWiki64k().vocab_filename

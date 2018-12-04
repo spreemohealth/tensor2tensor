@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Imports for problem modules."""
 from __future__ import absolute_import
 from __future__ import division
@@ -39,7 +40,7 @@ MODULES = [
     "tensor2tensor.data_generators.function_docstring",
     "tensor2tensor.data_generators.gene_expression",
     "tensor2tensor.data_generators.google_robot_pushing",
-    "tensor2tensor.data_generators.gym_problems_specs",
+    "tensor2tensor.data_generators.gym_env",
     "tensor2tensor.data_generators.ice_parsing",
     "tensor2tensor.data_generators.imagenet",
     "tensor2tensor.data_generators.image_lsun",
@@ -82,6 +83,9 @@ MODULES = [
     "tensor2tensor.data_generators.video_generated",
     "tensor2tensor.data_generators.vqa",
     "tensor2tensor.data_generators.wiki",
+    "tensor2tensor.data_generators.wiki_lm",
+    "tensor2tensor.data_generators.wiki_revision",
+    "tensor2tensor.data_generators.wiki_multi_problems",
     "tensor2tensor.data_generators.wikisum.wikisum",
     "tensor2tensor.data_generators.wikitext103",
     "tensor2tensor.data_generators.wsj_parsing",

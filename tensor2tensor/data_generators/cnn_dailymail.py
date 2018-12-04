@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Data generators for the CNN and Daily Mail datasets."""
 
 from __future__ import absolute_import
@@ -27,22 +28,28 @@ from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.data_generators import text_problems
+from tensor2tensor.data_generators import wiki_lm
 from tensor2tensor.utils import registry
 
 import tensorflow as tf
 
 # Links to data from http://cs.nyu.edu/~kcho/DMQA/
-_CNN_STORIES_DRIVE_URL = "https://drive.google.com/uc?export=download&id=0BwmD_VLjROrfTHk4NFg2SndKcjQ"
+_CNN_STORIES_DRIVE_URL = ("https://drive.google.com/uc?"
+                          "export=download&id=0BwmD_VLjROrfTHk4NFg2SndKcjQ")
 
-_DAILYMAIL_STORIES_DRIVE_URL = "https://drive.google.com/uc?export=download&id=0BwmD_VLjROrfM1BxdkxVaTY2bWs"
+_DAILYMAIL_STORIES_DRIVE_URL = ("https://drive.google.com/uc?export=download&id"
+                                "=0BwmD_VLjROrfM1BxdkxVaTY2bWs")
 
 # Note: using See et al. (2017) as reference for data generation
 # For more info, use the links below
 
 # Train/Dev/Test Splits for summarization data
-_TRAIN_URLS = "https://raw.githubusercontent.com/abisee/cnn-dailymail/master/url_lists/all_train.txt"
-_DEV_URLS = "https://raw.githubusercontent.com/abisee/cnn-dailymail/master/url_lists/all_val.txt"
-_TEST_URLS = "https://raw.githubusercontent.com/abisee/cnn-dailymail/master/url_lists/all_test.txt"
+_TRAIN_URLS = ("https://raw.githubusercontent.com/abisee/cnn-dailymail/"
+               "master/url_lists/all_train.txt")
+_DEV_URLS = ("https://raw.githubusercontent.com/abisee/cnn-dailymail/"
+             "master/url_lists/all_val.txt")
+_TEST_URLS = ("https://raw.githubusercontent.com/abisee/cnn-dailymail/"
+              "master/url_lists/all_test.txt")
 
 # End-of-sentence marker.
 EOS = text_encoder.EOS_ID
@@ -182,9 +189,13 @@ def write_raw_text_to_files(all_files, urls_path, dataset_split, tmp_dir):
   """Write text to files."""
 
   def write_to_file(all_files, urls_path, tmp_dir, filename):
-    with io.open(os.path.join(tmp_dir, filename + ".source"), "w") as fstory:
-      with io.open(os.path.join(tmp_dir, filename + ".target"),
-                   "w") as fsummary:
+    """Write text to files."""
+    with io.open(
+        os.path.join(tmp_dir, filename + ".source"), "w",
+        encoding="utf-8") as fstory:
+      with io.open(
+          os.path.join(tmp_dir, filename + ".target"), "w",
+          encoding="utf-8") as fsummary:
         for example in example_generator(all_files, urls_path, sum_token=True):
           story, summary = _story_summary_split(example)
           fstory.write(story + "\n")
@@ -235,3 +246,21 @@ class SummarizeCnnDailymail32k(text_problems.Text2TextProblem):
     for example in example_generator(all_files, urls_path, sum_token=True):
       story, summary = _story_summary_split(example)
       yield {"inputs": story, "targets": summary}
+
+
+@registry.register_problem
+class SummarizeCnnDailymailWikiLMSharedVocab(SummarizeCnnDailymail32k):
+  """Summarize CNN and Daily Mail articles using the Wiki 32k vocab."""
+
+  @property
+  def vocab_filename(self):
+    return wiki_lm.LanguagemodelEnWiki32k().vocab_filename
+
+
+@registry.register_problem
+class SummarizeCnnDailymailWikiLMSharedVocab64k(SummarizeCnnDailymail32k):
+  """Summarize CNN and Daily Mail articles using the Wiki 64k vocab."""
+
+  @property
+  def vocab_filename(self):
+    return wiki_lm.LanguagemodelEnWiki64k().vocab_filename

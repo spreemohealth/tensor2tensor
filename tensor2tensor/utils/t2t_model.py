@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """T2TModel Base Class."""
 from __future__ import absolute_import
 from __future__ import division
@@ -21,6 +22,7 @@ import collections
 import contextlib
 import copy
 import functools
+import inspect
 import math
 import time
 import six
@@ -34,6 +36,7 @@ from tensor2tensor.utils import decoding
 from tensor2tensor.utils import expert_utils as eu
 from tensor2tensor.utils import learning_rate
 from tensor2tensor.utils import metrics
+from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import modality
 from tensor2tensor.utils import optimize
 from tensor2tensor.utils import quantization
@@ -119,14 +122,29 @@ class T2TModel(base.Layer):
     hparams = copy.copy(hparams)
     if self._problem_hparams and hparams.shared_embedding_and_softmax_weights:
       # If vocabularies differ, unset shared_embedding_and_softmax_weights.
-      input_modality = self._problem_hparams.input_modality.get("inputs")
-      target_modality = self._problem_hparams.target_modality
+      input_modality = self._problem_hparams.modality.get("inputs")
+      target_modality = self._problem_hparams.modality.get("targets")
       if (isinstance(input_modality, modality.Modality) and
           isinstance(target_modality, modality.Modality) and
           input_modality.top_dimensionality !=
           target_modality.top_dimensionality):
         log_info("Unsetting shared_embedding_and_softmax_weights.")
         hparams.shared_embedding_and_softmax_weights = 0
+
+      if isinstance(target_modality, modality.Modality):
+        if hparams.hidden_size:
+          hidden_size = hparams.hidden_size
+        else:
+          hidden_size = 1024
+
+        mlperf_log.transformer_print(
+            key=mlperf_log.MODEL_HP_EMBEDDING_SHARED_WEIGHTS,
+            value={
+                "vocab_size": target_modality.top_dimensionality,
+                "hidden_size": hidden_size
+            },
+            hparams=hparams)
+
     self._original_hparams = hparams
     self.set_mode(mode)
 
@@ -158,11 +176,11 @@ class T2TModel(base.Layer):
   # Replace the two methods below in order to add custom SessionRunHooks to
   # the training procedure.
   @staticmethod
-  def train_hooks():
+  def train_hooks(hook_context):
     return []
 
   @staticmethod
-  def eval_hooks():
+  def eval_hooks(hook_context):
     return []
 
   @property
@@ -180,7 +198,7 @@ class T2TModel(base.Layer):
   @property
   def has_input(self):
     if self._problem_hparams:
-      return "inputs" in self._problem_hparams.input_modality
+      return "inputs" in self._problem_hparams.modality
     else:
       return True
 
@@ -201,7 +219,7 @@ class T2TModel(base.Layer):
   @property
   def _target_modality_is_real(self):
     """Whether the target modality is real-valued."""
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
     return target_modality.name.startswith("real_")
 
   def call(self, inputs, **kwargs):
@@ -223,8 +241,15 @@ class T2TModel(base.Layer):
       else:
         return tf.concat(sharded_logits, 0), losses
 
-  @property
-  def use_body_sharded(self):
+  @staticmethod
+  def has_symmetric_shards(model_name):
+    # model_fn is sharded symmetrically unless the model overrides body_sharded
+    # method to manually control the sharding.
+    model_cls = registry.model(model_name)
+    return not model_cls.use_body_sharded()
+
+  @staticmethod
+  def use_body_sharded():
     return False
 
   def body_sharded(self, sharded_features):
@@ -235,7 +260,7 @@ class T2TModel(base.Layer):
   def model_fn_sharded(self, sharded_features):
     dp = self._data_parallelism
     datashard_to_features = self._to_features_per_datashard(sharded_features)
-    if self.use_body_sharded:
+    if self.use_body_sharded():
       # MoE models override body_sharded
       transformed_features = dp(self.bottom, datashard_to_features)
       body_out = self.body_sharded(
@@ -334,43 +359,43 @@ class T2TModel(base.Layer):
     if not self._problem_hparams:
       log_warn("Without a Problem, T2TModel.bottom is a passthrough.")
       return features
+
     transformed_features = collections.OrderedDict()
     all_previous_modalities = []
+    target_modality = _create_target_modality(self._problem_hparams.modality)
 
-    # Transform the input features
-    for key, input_modality in sorted(
-        six.iteritems(self._problem_hparams.input_modality)):
-      if key not in features:
-        tf.logging.warning("Missing feature %s - ignoring." % key)
+    # Transform features via its corresponding modality.
+    for feature_name, modality_obj in sorted(
+        six.iteritems(self._problem_hparams.modality)):
+      if feature_name not in features:
+        tf.logging.warning("Missing feature %s - ignoring." % feature_name)
         continue
-      do_reuse = input_modality.name in all_previous_modalities
-      with tf.variable_scope(input_modality.name, reuse=do_reuse) as im_vs:
-        self._add_variable_scope(input_modality.name, im_vs)
-        log_info("Transforming feature '%s' with %s.bottom", key,
-                 input_modality.name)
-        transformed_features[key] = input_modality.bottom(features[key])
-      all_previous_modalities.append(input_modality.name)
-
-    # Transform the targets (for autoregressive models)
-    target_modality = self._problem_hparams.target_modality
-    if isinstance(target_modality, dict):
-      for k, v in six.iteritems(target_modality):
-        if k in features:
-          # TODO(aidangomez): share variables?
-          with tf.variable_scope("%s/%s" % (v.name, k)) as tm_vs:
-            self._add_variable_scope("%s/%s" % (v.name, k), tm_vs)
-            log_info("Transforming '%s' with %s.targets_bottom", k, v.name)
-            transformed_features[k] = v.targets_bottom(features[k])
+      # Use if-else clauses to preserve behavior of previous changes: namely,
+      # the variable scope name for the targets feature if there is only one
+      # target modality; and to reuse variable scopes for only input modalities.
+      if feature_name in target_modality:
+        if len(target_modality) > 1:
+          variable_scope_name = "%s/%s" % (modality_obj.name, feature_name)
         else:
-          tf.logging.warn("Modality not found in features: %s", k)
-    else:
-      with tf.variable_scope(target_modality.name) as tm_vs:
-        self._add_variable_scope(target_modality.name, tm_vs)
-        if "targets" in features:
-          log_info("Transforming 'targets' with %s.targets_bottom",
-                   target_modality.name)
-          transformed_features["targets"] = target_modality.targets_bottom(
-              features["targets"])
+          variable_scope_name = modality_obj.name
+        # TODO(aidangomez): share variables?
+        with tf.variable_scope(variable_scope_name) as vs:
+          self._add_variable_scope(variable_scope_name, vs)
+          log_info("Transforming feature '%s' with %s.targets_bottom",
+                   feature_name,
+                   modality_obj.name)
+          transformed_features[feature_name] = modality_obj.targets_bottom(
+              features[feature_name])
+      else:
+        do_reuse = modality_obj.name in all_previous_modalities
+        with tf.variable_scope(modality_obj.name, reuse=do_reuse) as vs:
+          self._add_variable_scope(modality_obj.name, vs)
+          log_info("Transforming feature '%s' with %s.bottom",
+                   feature_name,
+                   modality_obj.name)
+          transformed_features[feature_name] = modality_obj.bottom(
+              features[feature_name])
+        all_previous_modalities.append(modality_obj.name)
 
     for key in features:
       if key not in transformed_features:
@@ -452,16 +477,22 @@ class T2TModel(base.Layer):
     Returns:
       logits: dict of str to Tensor, denoting each logits for each target; or
         a single Tensor denoting the logits for that target.
+        When targets are generated at training time:
+          logits == {
+            "self_generated_targets": <generated targets tensor>
+            "logits": <original logits Tensor or dict>
+          }
     """
     if isinstance(body_output, dict):
       if self._problem_hparams:
-        target_modality = self._problem_hparams.target_modality
+        target_modality = _create_target_modality(
+            self._problem_hparams.modality)
       else:
         target_modality = {k: None for k in body_output.keys()}
       for k in body_output.keys():
         assert k in target_modality.keys(), (
             "The key %s of model_body's returned logits dict must be in "
-            "problem_hparams.target_modality's dict." % k)
+            "problem_hparams.modality's dict." % k)
       logits = {}
       for k, v in six.iteritems(body_output):
         # TODO(aidangomez): share variables here?
@@ -471,13 +502,14 @@ class T2TModel(base.Layer):
       return logits
     else:
       if self._problem_hparams:
-        target_modality = self._problem_hparams.target_modality
+        target_modality = _create_target_modality(
+            self._problem_hparams.modality)
       else:
         target_modality = None
       if isinstance(target_modality, dict):
         assert "targets" in target_modality, (
             "model_body returned single logits so 'targets' must be a key "
-            "since problem_hparams.target_modality is a dict.")
+            "since problem_hparams.modality is a dict.")
         target_modality = target_modality["targets"]
       return self._top_single(body_output, target_modality, features)
 
@@ -511,13 +543,14 @@ class T2TModel(base.Layer):
   def loss(self, logits, features):
     if isinstance(logits, dict):
       if self._problem_hparams:
-        target_modality = self._problem_hparams.target_modality
+        target_modality = _create_target_modality(
+            self._problem_hparams.modality)
       else:
         target_modality = {k: None for k in logits.keys()}
       for k in logits.keys():
         assert k in target_modality.keys(), (
             "The key %s of model_body's returned logits dict must be in "
-            "problem_hparams.target_modality's dict." % k)
+            "problem_hparams.modality's dict." % k)
       losses = {}
       for k, v in six.iteritems(logits):
         losses[k] = self._loss_single(v, target_modality[k], features[k])
@@ -527,17 +560,22 @@ class T2TModel(base.Layer):
           tf.summary.scalar(k + "_loss", n / d)
           tf.summary.scalar(k + "_loss_num", n)
           tf.summary.scalar(k + "_loss_den", d)
+          if getattr(self.hparams, "visualize_logits_histogram", False):
+            hist = tf.summary.histogram
+            hist(k + "_predict", tf.argmax(tf.squeeze(v), axis=-1))
+            hist(k + "_targets", features[k])
 
       return tf.add_n([n / d for n, d in losses.values()])
     else:
       if self._problem_hparams:
-        target_modality = self._problem_hparams.target_modality
+        target_modality = _create_target_modality(
+            self._problem_hparams.modality)
       else:
         target_modality = None
       if isinstance(target_modality, dict):
         assert "targets" in target_modality, (
             "model_body returned single logits so 'targets' must be a key "
-            "since problem_hparams.target_modality is a dict.")
+            "since problem_hparams.modality is a dict.")
         target_modality = target_modality["targets"]
       return self._loss_single(logits, target_modality, features["targets"])
 
@@ -566,14 +604,9 @@ class T2TModel(base.Layer):
 
     if self._problem_hparams:
       # Set model hparams in problem_hparams' modalities, which also store them.
-      for im in six.itervalues(self._problem_hparams.input_modality):
-        im._model_hparams = self._hparams  # pylint: disable=protected-access
-
-      if isinstance(self._problem_hparams.target_modality, dict):
-        for tm in six.itervalues(self._problem_hparams.target_modality):
-          tm._model_hparams = self._hparams  # pylint: disable=protected-access
-      elif self._problem_hparams.target_modality is not None:
-        self._problem_hparams.target_modality._model_hparams = self._hparams  # pylint: disable=protected-access
+      for modality_obj in six.itervalues(self._problem_hparams.modality):
+        if modality_obj is not None:
+          modality_obj._model_hparams = self._hparams  # pylint: disable=protected-access
 
   def prepare_features_for_infer(self, features):
     """Called before inference to allow adding infer-specific features."""
@@ -663,7 +696,7 @@ class T2TModel(base.Layer):
       self._fill_problem_hparams_features(features)
 
       if self._problem_hparams:
-        target_modality = self._problem_hparams.target_modality
+        target_modality = self._problem_hparams.modality["targets"]
         if target_modality.is_class_modality:
           beam_size = 1  # No use to run beam-search for a single class.
       if beam_size == 1:
@@ -672,11 +705,17 @@ class T2TModel(base.Layer):
       else:
         log_info("Beam Decoding with beam size %d" % beam_size)
         results = self._beam_decode(features, decode_length, beam_size,
-                                    top_beams, alpha)
+                                    top_beams, alpha, use_tpu)
 
       return results
 
-  def _beam_decode(self, features, decode_length, beam_size, top_beams, alpha):
+  def _beam_decode(self,
+                   features,
+                   decode_length,
+                   beam_size,
+                   top_beams,
+                   alpha,
+                   use_tpu=False):
     """Beam search decoding.
 
     Models should ideally implement a more efficient version of this function.
@@ -688,15 +727,16 @@ class T2TModel(base.Layer):
       top_beams: an integer. How many of the beams to return.
       alpha: Float that controls the length penalty. larger the alpha, stronger
         the preference for longer translations.
+      use_tpu: A bool, whether to do beam decode on TPU.
 
     Returns:
        samples: an integer `Tensor`. Top samples from the beam search
     """
     return self._beam_decode_slow(features, decode_length, beam_size, top_beams,
-                                  alpha)
+                                  alpha, use_tpu)
 
   def _beam_decode_slow(self, features, decode_length, beam_size, top_beams,
-                        alpha):
+                        alpha, use_tpu=False):
     """Slow version of Beam search decoding.
 
     Quadratic time in decode_length.
@@ -708,13 +748,17 @@ class T2TModel(base.Layer):
       top_beams: an integer. How many of the beams to return.
       alpha: Float that controls the length penalty. larger the alpha, stronger
         the preference for longer translations.
+      use_tpu: A bool, whether to do slow beam decode on TPU.
 
     Returns:
-       samples: an integer `Tensor`. Top samples from the beam search
+      samples: an integer `Tensor`. Top samples from the beam search.
+
+    Raises:
+      NotImplementedError: If use_tpu is set to true.
     """
     batch_size = common_layers.shape_list(features["inputs"])[0]
 
-    def symbols_to_logits_fn(ids):
+    def symbols_to_logits_fn(ids, i=None):
       """Go from ids to logits."""
       ids = tf.expand_dims(tf.expand_dims(ids, axis=2), axis=3)
       ids = tf.pad(ids[:, 1:], [[0, 0], [0, 1], [0, 0], [0, 0]])
@@ -726,13 +770,15 @@ class T2TModel(base.Layer):
         ids = tf.concat([pt, ids], axis=1)
 
       features["targets"] = ids
+      if i is not None:
+        features["decode_loop_step"] = i
       self._coverage = None
       logits, _ = self(features)  # pylint: disable=not-callable
       # now self._coverage is a coverage tensor for the first datashard.
       # it has shape [batch_size] and contains floats between 0 and
       # source_length.
       if self._problem_hparams:
-        if self._problem_hparams.target_modality.top_is_pointwise:
+        if self._problem_hparams.modality["targets"].top_is_pointwise:
           return tf.squeeze(logits, axis=[1, 2, 3])
       # -1 due to the pad above.
       current_output_position = common_layers.shape_list(ids)[1] - 1
@@ -752,10 +798,9 @@ class T2TModel(base.Layer):
       features["inputs"] = tf.reshape(features["inputs"],
                                       [s[0] * s[1], s[2], s[3], s[4]])
 
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
     vocab_size = target_modality.top_dimensionality
     # Setting decode length to input length + decode_length
-    decode_length = tf.constant(decode_length)
     if "partial_targets" not in features:
       inputs = features["inputs"]
       decode_length = (common_layers.shape_list(inputs)[1] +
@@ -844,7 +889,7 @@ class T2TModel(base.Layer):
     # in metric functions stays in the same frame as other vars.
     targets_old = features.get("targets", None)
 
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
 
     def infer_step(i, recent_output, recent_logits, unused_loss):
       """Inference step."""
@@ -891,7 +936,7 @@ class T2TModel(base.Layer):
     # input shape, so we confuse it about the input shape.
     initial_output = tf.slice(initial_output, [0, 0, 0, 0],
                               common_layers.shape_list(initial_output))
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
     if target_modality.is_class_modality:
       decode_length = 1
     else:
@@ -1011,13 +1056,13 @@ class T2TModel(base.Layer):
     # in metric functions stays in the same frame as other vars.
     targets_old = features.get("targets", None)
 
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
 
     def infer_step(recent_output, recent_logits, unused_loss):
       """Inference step."""
       if not tf.contrib.eager.in_eager_mode():
         if self._target_modality_is_real:
-          dim = self._problem_hparams.target_modality.top_dimensionality
+          dim = self._problem_hparams.modality["targets"].top_dimensionality
           recent_output.set_shape([None, None, None, dim])
         else:
           recent_output.set_shape([None, None, None, 1])
@@ -1057,7 +1102,7 @@ class T2TModel(base.Layer):
     else:
       batch_size = common_layers.shape_list(features["inputs"])[0]
       if self._target_modality_is_real:
-        dim = self._problem_hparams.target_modality.top_dimensionality
+        dim = self._problem_hparams.modality["targets"].top_dimensionality
         initial_output = tf.zeros((batch_size, 0, 1, dim), dtype=tf.float32)
       else:
         initial_output = tf.zeros((batch_size, 0, 1, 1), dtype=tf.int64)
@@ -1065,7 +1110,7 @@ class T2TModel(base.Layer):
     # input shape, so we confuse it about the input shape.
     initial_output = tf.slice(initial_output, [0, 0, 0, 0],
                               common_layers.shape_list(initial_output))
-    target_modality = self._problem_hparams.target_modality
+    target_modality = self._problem_hparams.modality["targets"]
     if target_modality.is_class_modality:
       decode_length = 1
     else:
@@ -1208,19 +1253,20 @@ class T2TModel(base.Layer):
     return features
 
   @staticmethod
-  def get_train_hooks(model_name):
+  def get_train_hooks(model_name, hook_context):
     model_cls = registry.model(model_name)
-    return model_cls.train_hooks()
+    return model_cls.train_hooks(hook_context)
 
   @staticmethod
-  def get_eval_hooks(model_name):
+  def get_eval_hooks(model_name, hook_context):
     model_cls = registry.model(model_name)
-    return model_cls.eval_hooks()
+    return model_cls.eval_hooks(hook_context)
 
   @staticmethod
   def make_estimator_model_fn(model_name,
                               hparams,
-                              decode_hparams=None):
+                              decode_hparams=None,
+                              use_tpu=False):
     model_cls = registry.model(model_name)
 
     def wrapping_model_fn(features, labels, mode, params=None, config=None):
@@ -1231,7 +1277,8 @@ class T2TModel(base.Layer):
           mode,
           config=config,
           params=params,
-          decode_hparams=decode_hparams)
+          decode_hparams=decode_hparams,
+          use_tpu=use_tpu)
 
     return wrapping_model_fn
 
@@ -1243,7 +1290,8 @@ class T2TModel(base.Layer):
                          mode,
                          config=None,
                          params=None,
-                         decode_hparams=None):
+                         decode_hparams=None,
+                         use_tpu=False):
     """Model fn for Estimator.
 
     Args:
@@ -1254,6 +1302,7 @@ class T2TModel(base.Layer):
       config: RunConfig, possibly with data_parallelism attribute
       params: dict, may include batch_size, use_tpu
       decode_hparams: HParams, used when mode == PREDICT.
+      use_tpu: A bool, whether to build the inference graph for TPU.
 
     Returns:
       TPUEstimatorSpec if use tpu else EstimatorSpec
@@ -1262,7 +1311,6 @@ class T2TModel(base.Layer):
       _create_dummy_vars()
     hparams = copy.deepcopy(hparams)
 
-    use_tpu = params and params.get("use_tpu", False)
     # Instantiate model
     data_parallelism = None
     if not use_tpu and config:
@@ -1277,6 +1325,14 @@ class T2TModel(base.Layer):
 
     # PREDICT mode
     if mode == tf.estimator.ModeKeys.PREDICT:
+      if use_tpu:
+        inputs = features["inputs"]
+        shape = inputs.get_shape().as_list()
+        if shape[0] is None:
+          shape[0] = decode_hparams.batch_size or hparams.batch_size
+        if shape[1] is None:
+          shape[1] = hparams.max_input_seq_length or hparams.max_length
+        inputs.set_shape(shape)
       return model.estimator_spec_predict(features, use_tpu=use_tpu)
 
     # TRAIN and EVAL modes
@@ -1294,6 +1350,22 @@ class T2TModel(base.Layer):
       # print('Losses Dict: ',losses_dict)
     else:
       logits, losses_dict = model(features)  # pylint: disable=not-callable
+
+    # Support model-generated labels by overriding features["targets"] with
+    # logits["self_generated_targets"].
+    if isinstance(logits, dict) and "self_generated_targets" in logits:
+      # Overwrite 'features["targets"]' and 'labels'
+      # by logits["self_generated_targets"].
+      tf.logging.info("Replacing targets with model-provided targets.")
+      features["targets"] = labels = logits.pop("self_generated_targets")
+      assert logits.keys() == ["logits"], (
+          # See "Returns" in the "top" method docstring for the expected
+          # "logits" format when targets are generated at training time.
+          "Expect only key 'logits' when there is 'self_generated_targets'. "
+          "Found {}".format(logits.keys())
+      )
+      # Recover the original logits tensor from the logits dict.
+      logits = logits["logits"]  # Can be a tf.Tensor or a dict.
 
     # Set known shapes
     if common_layers.is_xla_compiled():
@@ -1353,10 +1425,10 @@ class T2TModel(base.Layer):
     for var in tf.contrib.framework.get_trainable_variables():
       var_name = var.name.split(":")[0]
       if reader.has_tensor(var_name):
-        tf.logging.info("Loading variable from checkpoint: %s", var_name)
+        log_info("Loading variable from checkpoint: %s", var_name)
         variable_map[var_name] = var
       else:
-        tf.logging.info(
+        log_info(
             "Cannot find variable in checkpoint, skipping: %s", var_name)
     tf.train.init_from_checkpoint(ckpt_dir, variable_map)
 
@@ -1365,18 +1437,32 @@ class T2TModel(base.Layer):
     train_op = self.optimize(loss, num_async_replicas=num_async_replicas,
                              use_tpu=use_tpu)
 
-    if self._hparams.warm_start_from:
-      self.initialize_from_ckpt(self._hparams.warm_start_from)
-
     if use_tpu:
-      host_call = _create_host_call(self.hparams.model_dir)
+      if self._hparams.warm_start_from:
+        def scaffold_fn():
+          self.initialize_from_ckpt(self._hparams.warm_start_from)
+          return tf.train.Scaffold()
+      else:
+        scaffold_fn = None
+
+      # Note: important to call this before remove_summaries()
+      if self.hparams.tpu_enable_host_call:
+        host_call = create_host_call(self.hparams.model_dir)
+      else:
+        host_call = None
+
       remove_summaries()
+
       return tf.contrib.tpu.TPUEstimatorSpec(
           tf.estimator.ModeKeys.TRAIN,
           loss=loss,
           train_op=train_op,
-          host_call=host_call)
+          host_call=host_call,
+          scaffold_fn=scaffold_fn)
     else:
+      if self._hparams.warm_start_from:
+        self.initialize_from_ckpt(self._hparams.warm_start_from)
+
       return tf.estimator.EstimatorSpec(
           tf.estimator.ModeKeys.TRAIN, loss=loss, train_op=train_op)
 
@@ -1396,6 +1482,7 @@ class T2TModel(base.Layer):
         # For TPU, logits dict will be passed as keyword arguments to
         # eval_metrics_fn. Here we add the labels to those arguments.
         logits.update({"labels": labels})
+        logits.update({"features": features})
         return tf.contrib.tpu.TPUEstimatorSpec(
             tf.estimator.ModeKeys.EVAL,
             eval_metrics=(eval_metrics_fn, logits),
@@ -1404,7 +1491,7 @@ class T2TModel(base.Layer):
         eval_metrics_fn = create_tpu_eval_metrics_fn(problem, hparams)
         return tf.contrib.tpu.TPUEstimatorSpec(
             tf.estimator.ModeKeys.EVAL,
-            eval_metrics=(eval_metrics_fn, [logits, labels]),
+            eval_metrics=(eval_metrics_fn, [logits, labels, features]),
             loss=loss)
     else:
       task_list = [problem]
@@ -1434,10 +1521,19 @@ class T2TModel(base.Layer):
         predictions = logits
       else:
         predictions = {"predictions": logits}
+
+      evaluation_hooks = []
+      # Create a SummarySaverHook
+      eval_summary_hook = tf.train.SummarySaverHook(
+          save_steps=1, output_dir=self.hparams.model_dir + "/eval",
+          summary_op=tf.summary.merge_all())
+      evaluation_hooks.append(eval_summary_hook)
+
       return tf.estimator.EstimatorSpec(
           tf.estimator.ModeKeys.EVAL,
           predictions=predictions,
           eval_metric_ops=eval_metrics,
+          evaluation_hooks=evaluation_hooks,
           loss=loss)
 
   def estimator_spec_predict(self, features, use_tpu=False):
@@ -1472,6 +1568,8 @@ class T2TModel(base.Layer):
     # Pass through remaining features
     for name, feature in features.items():
       if name not in list(predictions.keys()) + ["infer_targets"]:
+        if name == "decode_loop_step":
+          continue
         if not feature.shape.as_list():
           # All features must have a batch dimension
           batch_size = common_layers.shape_list(outputs)[0]
@@ -1566,15 +1664,18 @@ def create_tpu_eval_metrics_fn(problem, model_hparams):
   metric_fns = []
   eval_metrics = problem.eval_metrics()
 
-  tm = problem.get_hparams(model_hparams).target_modality
+  tm = _create_target_modality(problem.get_hparams(model_hparams).modality)
   if isinstance(tm, dict):
     for k, v in six.iteritems(tm):
       weights_fn = v.targets_weights_fn
 
       def make_metric_fn(metric_fn):
-
-        def wrapped_metric_fn(logits, labels, weights_fn=weights_fn):
-          num, den = metric_fn(logits, labels, weights_fn=weights_fn)
+        def wrapped_metric_fn(logits, labels, features, weights_fn=weights_fn):
+          kwargs = {}
+          args, _, keywords, _ = inspect.getargspec(metric_fn)
+          if ("features" in args) or keywords:
+            kwargs["features"] = features
+          num, den = metric_fn(logits, labels, weights_fn=weights_fn, **kwargs)
           return tf.metrics.mean(num, den)
 
         return wrapped_metric_fn
@@ -1589,9 +1690,12 @@ def create_tpu_eval_metrics_fn(problem, model_hparams):
     weights_fn = tm.targets_weights_fn
 
     def make_metric_fn(metric_fn):
-
-      def wrapped_metric_fn(logits, labels):
-        num, den = metric_fn(logits, labels, weights_fn=weights_fn)
+      def wrapped_metric_fn(logits, labels, features):
+        kwargs = {}
+        args, _, keywords, _ = inspect.getargspec(metric_fn)
+        if ("features" in args) or keywords:
+          kwargs["features"] = features
+        num, den = metric_fn(logits, labels, weights_fn=weights_fn, **kwargs)
         return tf.metrics.mean(num, den)
 
       return wrapped_metric_fn
@@ -1609,18 +1713,21 @@ def create_tpu_eval_metrics_fn(problem, model_hparams):
 
     if logits is None:
       logits = kwargs
+      features = logits["features"]
+    else:
+      features = kwargs["features"]
 
     for name, fn in metric_fns:
       if isinstance(logits, dict) and isinstance(labels, dict):
         for k, v in six.iteritems(logits):
-          metrics_dict["%s/%s" % (k, name)] = fn(v, labels[k])
+          metrics_dict["%s/%s" % (k, name)] = fn(v, labels[k], features)
       elif isinstance(logits, dict):
         tf.logging.warning("Logits is a dict, but labels is not; only "
                            "evaluating logits['targets'] against labels.")
         metrics_dict["%s/%s" % ("targets", name)] = fn(logits["targets"],
-                                                       labels)
+                                                       labels, features)
       else:
-        metrics_dict[name] = fn(logits, labels)
+        metrics_dict[name] = fn(logits, labels, features)
 
     return metrics_dict
 
@@ -1628,13 +1735,15 @@ def create_tpu_eval_metrics_fn(problem, model_hparams):
 
 
 def remove_summaries():
+  """Remove summaries from the default graph."""
   g = tf.get_default_graph()
   key = tf.GraphKeys.SUMMARIES
+  log_debug("Remove summaries %s" % str(g.get_collection(key)))
   del g.get_collection_ref(key)[:]
   assert not g.get_collection(key)
 
 
-def _create_host_call(model_dir):
+def create_host_call(model_dir):
   """Construct a host_call writing scalar summaries.
 
   Args:
@@ -1645,7 +1754,6 @@ def _create_host_call(model_dir):
   """
   graph = tf.get_default_graph()
   summaries = graph.get_collection(tf.GraphKeys.SUMMARIES)
-
   gs_t = tf.reshape(tf.to_int32(tf.train.get_global_step()), [1])
   summary_kwargs = collections.OrderedDict()
   for t in summaries:
@@ -1679,6 +1787,7 @@ def _create_host_call(model_dir):
   if not summary_kwargs:
     return None
   summary_kwargs["global_step"] = gs_t
+  log_info("summary_kwargs %s" % str(summary_kwargs))
 
   def host_call_fn(**kwargs):
     """Training host call. Creates summaries for training metrics.
@@ -1731,7 +1840,7 @@ def create_eager_var_store():
 def scheduled_sampling(hparams, problem_hparams, dp, sharded_logits, losses,
                        sharded_features, transformed_features, model):
   """Scheduled sampling."""
-  target_modality = problem_hparams.target_modality
+  target_modality = problem_hparams.modality["targets"]
 
   def sample(x):
     """Multinomial sampling from a n-dimensional tensor."""
@@ -1833,6 +1942,10 @@ def _eager_log(level, *args):
   getattr(tf.logging, level)(*args)
 
 
+def log_debug(*args):
+  _eager_log("debug", *args)
+
+
 def log_info(*args):
   _eager_log("info", *args)
 
@@ -1880,3 +1993,12 @@ def set_custom_getter_compose(custom_getter):
   tf.get_variable_scope().set_custom_getter(
       _compose_custom_getters(tf.get_variable_scope().custom_getter,
                               custom_getter))
+
+
+def _create_target_modality(modality_dict):
+  # TODO(trandustin): We require this in order to apply methods utilized
+  # differently for modalities which are "targets"
+  # (e.g., modality.target_bottom). In the future, remove need for this
+  # behavior.
+  return {k: v for k, v in six.iteritems(modality_dict) if "target" in k
+          and k != "targets_segmentation" and k != "targets_position"}

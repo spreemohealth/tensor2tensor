@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Data reader test."""
 
 from __future__ import absolute_import
@@ -25,6 +26,7 @@ from six.moves import range  # pylint: disable=redefined-builtin
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem as problem_mod
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import data_reader
 from tensor2tensor.utils import registry
 
@@ -49,10 +51,10 @@ class TestProblem(problem_mod.Problem):
 
   def hparams(self, defaults, model_hparams):
     hp = defaults
-    hp.input_modality = {
-        "inputs": (registry.Modalities.SYMBOL, 30)
-    }
-    hp.target_modality = (registry.Modalities.SYMBOL, 30)
+    hp.modality = {"inputs": modalities.SymbolModality,
+                   "targets": modalities.SymbolModality}
+    hp.vocab_size = {"inputs": 30,
+                     "targets": 30}
 
   def example_reading_spec(self):
     data_fields = {

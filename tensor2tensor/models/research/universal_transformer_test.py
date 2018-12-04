@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Tests for Transformer."""
 
 from __future__ import absolute_import
@@ -44,7 +45,7 @@ class UniversalTransformerTest(tf.test.TestCase):
                                                      VOCAB_SIZE,
                                                      hparams)
     if not has_input:
-      p_hparams.input_modality = {}
+      del p_hparams.modality["inputs"]
     hparams.problems = [p_hparams]
 
     inputs = -1 + np.random.random_integers(
@@ -52,10 +53,11 @@ class UniversalTransformerTest(tf.test.TestCase):
     targets = -1 + np.random.random_integers(
         VOCAB_SIZE, size=(BATCH_SIZE, TARGET_LENGTH, 1, 1))
     features = {
-        "inputs": tf.constant(inputs, dtype=tf.int32, name="inputs"),
         "targets": tf.constant(targets, dtype=tf.int32, name="targets"),
         "target_space_id": tf.constant(1, dtype=tf.int32)
     }
+    if has_input:
+      features["inputs"] = tf.constant(inputs, dtype=tf.int32, name="inputs")
 
     return universal_transformer.UniversalTransformer(
         hparams, mode, p_hparams), features

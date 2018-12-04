@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Modality base class - defines the bottom and top of the model."""
 from __future__ import absolute_import
 from __future__ import division
@@ -19,7 +20,6 @@ from __future__ import print_function
 
 import re
 from tensor2tensor.layers import common_layers
-from tensor2tensor.utils import registry
 
 import tensorflow as tf
 
@@ -198,4 +198,4 @@ class Modality(object):
 
   @property
   def is_class_modality(self):
-    return self.name.startswith(registry.Modalities.CLASS_LABEL)
+    return self.name.startswith("class_label")

@@ -12,11 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Self attention models for VQA."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+
+from six.moves import xrange
 
 from tensor2tensor.layers import common_attention
 from tensor2tensor.layers import common_hparams

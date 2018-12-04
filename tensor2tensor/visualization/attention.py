@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Module for postprocessing and displaying transformer attentions.
 
 This module is designed to be called from an ipython notebook.
@@ -85,7 +86,7 @@ def _get_attention(inp_text, out_text, enc_atts, dec_atts, encdec_atts):
     dec_atts: numpy array, decoder self-attentions
         [num_layers, batch_size, num_heads, dec_length, dec_length]
     encdec_atts: numpy array, encoder-decoder attentions
-        [num_layers, batch_size, num_heads, enc_length, dec_length]
+        [num_layers, batch_size, num_heads, dec_length, enc_length]
 
   Returns:
     Dictionary of attention representations with the structure:

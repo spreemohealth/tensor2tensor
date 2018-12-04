@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Optimization."""
 from __future__ import absolute_import
 from __future__ import division
@@ -189,6 +190,11 @@ class AdafactorOptimizer(tf.train.Optimizer):
 
   def _apply_sparse(self, grad, var):
     return self._apply_dense(tf.convert_to_tensor(grad), var)
+
+  def _resource_apply_sparse(self, grad, handle, indices):
+    return self._resource_apply_dense(
+        tf.convert_to_tensor(tf.IndexedSlices(grad, indices, tf.shape(handle))),
+        handle)
 
   def _parameter_scale(self, var):
     """Estimate the scale of the parameters from the current values.

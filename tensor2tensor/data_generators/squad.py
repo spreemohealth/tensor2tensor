@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Data generators for SquaAD (https://rajpurkar.github.io/SQuAD-explorer/).
 """
 
@@ -115,7 +116,8 @@ class SquadConcat(Squad):
     (super(SquadConcat, self)
      .hparams(defaults, unused_model_hparams))
     p = defaults
-    del p.input_modality['context']
+    del p.modality['context']
+    del p.vocab_size['context']
 
 
 @registry.register_problem

@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Tests for tensor2tensor.beam_search."""
 
 from __future__ import absolute_import
@@ -128,7 +129,7 @@ class BeamSearchTest(tf.test.TestCase):
     self.assertAllEqual([[[0, 0, 1]]], ids)
     self.assertAllClose([[0.7 * 0.6]], np.exp(probs))
 
-  def testNotGreedyBeamTwo(self):
+  def testNotGreedyBeamTwoWithStopEarly(self):
     batch_size = 1
     beam_size = 2
     vocab_size = 3
@@ -151,11 +152,51 @@ class BeamSearchTest(tf.test.TestCase):
         decode_length,
         vocab_size,
         0.0,
-        eos_id=1)
+        eos_id=1,
+        stop_early=True)  # default value, but just to make this explicit
 
     with self.test_session():
       ids = final_ids.eval()
       probs = final_probs.eval()
+    # given stop_early = True, the only 'assurance' is w.r.t. the first beam
+    # (i.e., other beams may not even be completed)
+    # so, we check only the first beam
+    first_beam = ids[:, 0]
+    first_probs = probs[:, 0]
+    self.assertAllEqual([[0, 2, 1]], first_beam)
+    self.assertAllClose([0.8 * 0.5], np.exp(first_probs))
+
+  def testNotGreedyBeamTwoWithoutStopEarly(self):
+    batch_size = 1
+    beam_size = 2
+    vocab_size = 3
+    decode_length = 3
+
+    initial_ids = tf.constant([0] * batch_size)  # GO
+    probabilities = tf.constant([[[0.1, 0.1, 0.8], [0.1, 0.1, 0.8]],
+                                 [[0.4, 0.5, 0.1], [0.2, 0.4, 0.4]],
+                                 [[0.05, 0.9, 0.05], [0.4, 0.4, 0.2]]])
+
+    def symbols_to_logits(ids):
+      pos = tf.shape(ids)[1]
+      logits = tf.to_float(tf.log(probabilities[pos - 1, :]))
+      return logits
+
+    final_ids, final_probs = beam_search.beam_search(
+        symbols_to_logits,
+        initial_ids,
+        beam_size,
+        decode_length,
+        vocab_size,
+        0.0,
+        eos_id=1,
+        stop_early=False)
+
+    with self.test_session():
+      ids = final_ids.eval()
+      probs = final_probs.eval()
+    # given stop_early = False, the algorithm will return all the beams
+    # so we can test all of them here
     self.assertAllEqual([[[0, 2, 1, 0], [0, 2, 0, 1]]], ids)
     self.assertAllClose([[0.8 * 0.5, 0.8 * 0.4 * 0.9]], np.exp(probs))
 
@@ -368,6 +409,56 @@ class BeamSearchTest(tf.test.TestCase):
         sess.run(final_ids)
       except tf.errors.InvalidArgumentError as e:
         raise AssertionError(e.message)
+
+  def testTPUBeam(self):
+    batch_size = 1
+    beam_size = 2
+    vocab_size = 3
+    decode_length = 3
+
+    initial_ids = tf.constant([0] * batch_size)  # GO
+    probabilities = tf.constant([[[0.1, 0.1, 0.8], [0.1, 0.1, 0.8]],
+                                 [[0.4, 0.5, 0.1], [0.2, 0.4, 0.4]],
+                                 [[0.05, 0.9, 0.05], [0.4, 0.4, 0.2]]])
+
+    # The top beam is always selected so we should see the top beam's state
+    # at each position, which is the one thats getting 3 added to it each step.
+    expected_states = tf.constant([[[0.], [0.]], [[3.], [3.]], [[6.], [6.]]])
+
+    def symbols_to_logits(_, i, states):
+      # We have to assert the values of state inline here since we can't fetch
+      # them out of the loop!
+      with tf.control_dependencies(
+          [tf.assert_equal(states["state"], expected_states[i])]):
+        logits = tf.to_float(tf.log(probabilities[i, :]))
+
+      states["state"] += tf.constant([[3.], [7.]])
+      return logits, states
+
+    states = {
+        "state": tf.zeros((batch_size, 1)),
+    }
+    states["state"] = tf.placeholder_with_default(
+        states["state"], shape=(None, 1))
+
+    final_ids, _ = beam_search.beam_search(
+        symbols_to_logits,
+        initial_ids,
+        beam_size,
+        decode_length,
+        vocab_size,
+        3.5,
+        eos_id=1,
+        states=states,
+        use_tpu=True)
+
+    with self.test_session() as sess:
+      # Catch and fail so that the testing framework doesn't think it's an error
+      try:
+        sess.run(final_ids)
+      except tf.errors.InvalidArgumentError as e:
+        raise AssertionError(e.message)
+    self.assertAllEqual([[[0, 2, 0, 1], [0, 2, 1, 0]]], final_ids)
 
 if __name__ == "__main__":
   tf.test.main()

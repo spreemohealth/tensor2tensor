@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Registry for models, hyperparameter settings, problem types, and datasets.
 
 Define a new model by subclassing T2TModel and register it:
@@ -55,19 +56,6 @@ _PROBLEMS = {}
 _PRUNING_PARAMS = {}
 _PRUNING_STRATEGY = {}
 _RANGED_HPARAMS = {}
-
-
-# TODO(trandustin): Many files depend on this to specify modality strings; let's
-# remove it in the future.
-class Modalities(object):
-  """An enum-like object carrying the set of available modality types."""
-  SYMBOL = "symbol"
-  IMAGE = "image"
-  AUDIO = "audio"
-  VIDEO = "video"
-  CLASS_LABEL = "class_label"
-  GENERIC = "generic"
-  REAL = "real"
 
 
 # Camel case to snake case utils
@@ -268,7 +256,7 @@ def problem(name):
                   ] + all_problem_names
     error_msg = "\n  * ".join(error_lines)
     raise LookupError(error_msg)
-  return _PROBLEMS[base_name](was_reversed, was_copy)
+  return _PROBLEMS[base_name](was_reversed=was_reversed, was_copy=was_copy)
 
 
 def list_problems():

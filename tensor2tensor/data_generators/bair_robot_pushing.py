@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Berkeley (BAIR) robot pushing dataset.
 
 Self-Supervised Visual Planning with Temporal Skip Connections
@@ -31,6 +32,7 @@ import numpy as np
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import video_utils
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import registry
 
 import tensorflow as tf
@@ -98,12 +100,10 @@ class VideoBairRobotPushing(video_utils.VideoProblem):
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
-    p.input_modality = {
-        "inputs": ("video", 256),
-    }
-    p.target_modality = {
-        "targets": ("video", 256),
-    }
+    p.modality = {"inputs": modalities.VideoModality,
+                  "targets": modalities.VideoModality}
+    p.vocab_size = {"inputs": 256,
+                    "targets": 256}
 
   def parse_frames(self, filenames):
     image_key = "{}/image_aux1/encoded"

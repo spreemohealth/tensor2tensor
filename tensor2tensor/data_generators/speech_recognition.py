@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Common classes for automatic speech recognition (ASR) datasets.
 
 The audio import uses sox to generate normalized waveforms, please install
@@ -25,8 +26,8 @@ from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.layers import common_audio
 from tensor2tensor.layers import common_layers
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import metrics
-from tensor2tensor.utils import registry
 
 import tensorflow as tf
 
@@ -59,9 +60,10 @@ class SpeechRecognitionProblem(problem.Problem):
     p.add_hparam("num_zeropad_frames", 250)
 
     p = defaults
-    # p.stop_at_eos = int(False)
-    p.input_modality = {"inputs": ("audio:speech_recognition_modality", None)}
-    p.target_modality = (registry.Modalities.SYMBOL, 256)
+    p.modality = {"inputs": modalities.SpeechRecognitionModality,
+                  "targets": modalities.SymbolModality}
+    p.vocab_size = {"inputs": None,
+                    "targets": 256}
 
   @property
   def is_character_level(self):
@@ -137,4 +139,7 @@ class SpeechRecognitionProblem(problem.Problem):
 
   def eval_metrics(self):
     defaults = super(SpeechRecognitionProblem, self).eval_metrics()
-    return defaults + [metrics.Metrics.EDIT_DISTANCE]
+    return defaults + [
+        metrics.Metrics.EDIT_DISTANCE,
+        metrics.Metrics.WORD_ERROR_RATE
+    ]

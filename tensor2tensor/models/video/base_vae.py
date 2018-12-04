@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Basic models for testing simple tasks."""
 
 from __future__ import absolute_import
@@ -29,13 +30,6 @@ class NextFrameBaseVae(object):
 
   def __init__(self, hparams):
     self.hparams = hparams
-
-  def get_iteration_num(self):
-    step_num = tf.train.get_global_step()
-    # TODO(lukaszkaiser): what should it be if it's undefined?
-    if step_num is None:
-      step_num = 1000000
-    return step_num
 
   def get_beta(self, kl_loss=0.0):
     """Get the KL multiplier, either dynamically or schedule based.
@@ -77,13 +71,24 @@ class NextFrameBaseVae(object):
       tf.summary.scalar("beta", beta)
       return beta
 
-  def get_extra_loss(self, mean, std):
-    """Losses in addition to the default modality losses."""
-    kl_loss = common_layers.kl_divergence(mean, std)
+  def get_kl_loss(self, means, log_vars, means_p=None, log_vars_p=None):
+    """Get KL loss for all the predicted Gaussians."""
+    kl_loss = 0.0
+    if means_p is None:
+      means_p = tf.unstack(tf.zeros_like(means))
+    if log_vars_p is None:
+      log_vars_p = tf.unstack(tf.zeros_like(log_vars))
+    enumerated_inputs = enumerate(zip(means, log_vars, means_p, log_vars_p))
+    if self.is_training and self.hparams.stochastic_model:
+      for i, (mean, log_var, mean_p, log_var_p) in enumerated_inputs:
+        kl_loss += common_layers.kl_divergence(mean, log_var, mean_p, log_var_p)
+        tf.summary.histogram("posterior_mean_%d" % i, mean)
+        tf.summary.histogram("posterior_log_var_%d" % i, log_var)
+        tf.summary.histogram("prior_mean_%d" % i, mean_p)
+        tf.summary.histogram("prior_log_var_%d" % i, log_var_p)
+      tf.summary.scalar("kl_raw", tf.reduce_mean(kl_loss))
+
     beta = self.get_beta(kl_loss)
-    tf.summary.histogram("posterior_mean", mean)
-    tf.summary.histogram("posterior_std", std)
-    tf.summary.scalar("kl_raw", tf.reduce_mean(kl_loss))
     # information capacity from "Understanding disentangling in beta-VAE"
     if self.hparams.information_capacity > 0.0:
       kl_loss = tf.abs(kl_loss - self.hparams.information_capacity)
@@ -109,7 +114,8 @@ class NextFrameBaseVae(object):
         min_logvar=self.hparams.latent_std_min,
         is_training=self.is_training,
         random_latent=first_phase,
-        tiny_mode=self.hparams.tiny_mode)
+        tiny_mode=self.hparams.tiny_mode,
+        small_mode=self.hparams.small_mode)
 
 
 

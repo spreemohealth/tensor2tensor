@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Base class for problem/dataset definitions."""
 from __future__ import absolute_import
 from __future__ import division
@@ -27,9 +28,9 @@ import six
 
 from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import text_encoder
-from tensor2tensor.layers import modalities
 from tensor2tensor.utils import data_reader
 from tensor2tensor.utils import metrics
+from tensor2tensor.utils import mlperf_log
 
 import tensorflow as tf
 from tensorflow.contrib.tpu.python.tpu import tpu_config
@@ -152,11 +153,13 @@ def preprocess_example_common(example, hparams, mode):
   if hparams.max_target_seq_length > 0:
     example["targets"] = example["targets"][:hparams.max_target_seq_length]
   if hparams.split_to_length:
-    example["targets"] = tf.reshape(example["targets"],
-                                    [-1, hparams.split_to_length, 1, 1])
-    if len(example) != 1:
-      raise ValueError("split_to_length only works for LM problems")
-    return tf.data.Dataset.from_tensor_slices(example)
+    new_example = {}
+    for k, v in six.iteritems(example):
+      if k == "targets" or k == "inputs":
+        new_example[k] = tf.reshape(v, [-1, hparams.split_to_length, 1, 1])
+      else:
+        tf.logging.warning("Dropping feature %s" % k)
+    return tf.data.Dataset.from_tensor_slices(new_example)
   return example
 
 
@@ -313,6 +316,15 @@ class Problem(object):
     """
     return False
 
+  @property
+  def skip_random_fraction_when_training(self):
+    """Skip a random number of examples at the beginning of training."""
+    # Skip a random fraction at the beginning of the stream.  The skip is
+    # essential for synchronous highly-parallel training to avoid multiple
+    # replicas reading the same data in lock-step. So keep this true unless
+    # you have a very specific setting in which it needs to be turned off.
+    return True
+
   def dataset_filename(self):
     return self.name
 
@@ -464,6 +476,11 @@ class Problem(object):
     self._feature_info = None
     self._task_id = -1
 
+  @property
+  def was_reversed(self):
+    """Whether the problem was reversed."""
+    return self._was_reversed
+
   def get_feature_encoders(self, data_dir=None):
     if self._encoders is None:
       self._encoders = self.feature_encoders(data_dir)
@@ -497,16 +514,8 @@ class Problem(object):
       _copy_problem_hparams(hp)
 
     model_hparams = copy.copy(model_hparams)
-    if (hasattr(model_hparams, "shared_embedding_and_softmax_weights") and
-        model_hparams.shared_embedding_and_softmax_weights):
-      # If vocabularies differ, unset shared_embedding_and_softmax_weights.
-      input_vocab_size = hp.input_modality.get("inputs")[1]
-      target_vocab_size = hp.target_modality[1]
-      if input_vocab_size != target_vocab_size:
-        tf.logging.warn("Unsetting shared_embedding_and_softmax_weights.")
-        model_hparams.shared_embedding_and_softmax_weights = 0
-
     _create_modalities(hp, model_hparams)
+
     self._hparams = hp
     return self._hparams
 
@@ -561,8 +570,8 @@ class Problem(object):
               shard=None,
               partition_id=0,
               num_partitions=1,
-              max_records=-1,
-              only_last=False):
+              shuffle_buffer_size=1024,
+              max_records=-1):
     """Build a Dataset for this problem.
 
     Args:
@@ -583,8 +592,9 @@ class Problem(object):
       shard: int, if provided, will only read data from the specified shard.
       partition_id: integer - which partition of the dataset to read from
       num_partitions: how many partitions in the dataset
+      shuffle_buffer_size: if shuffle_files is True, this is the buffer size
+        used to shuffle records.
       max_records: int, number of records to truncate to.
-      only_last: bool, whether we should include only files from last epoch.
 
     Returns:
       Dataset containing dict<feature name, Tensor>.
@@ -609,17 +619,9 @@ class Problem(object):
     _ = self.get_hparams(hparams)
 
     data_filepattern = self.filepattern(data_dir, dataset_split, shard=shard)
-    if only_last:
-      imprv_data_filepattern = data_filepattern + r"10.[\d+]"
-    else:
-      imprv_data_filepattern = data_filepattern
     tf.logging.info("Reading data files from %s", data_filepattern)
-    try:
-      data_files = sorted(tf.contrib.slim.parallel_reader.get_data_files(
-          imprv_data_filepattern))
-    except ValueError:
-      data_files = sorted(tf.contrib.slim.parallel_reader.get_data_files(
-          data_filepattern))
+    data_files = sorted(tf.contrib.slim.parallel_reader.get_data_files(
+        data_filepattern))
 
     # Functions used in dataset transforms below. `filenames` can be either a
     # `tf.string` tensor or `tf.data.Dataset` containing one or more filenames.
@@ -645,6 +647,7 @@ class Problem(object):
     tf.logging.info(
         "partition: %d num_data_files: %d" % (partition_id, len(data_files)))
     if shuffle_files:
+      mlperf_log.transformer_print(key=mlperf_log.INPUT_ORDER)
       random.shuffle(data_files)
 
     dataset = tf.data.Dataset.from_tensor_slices(tf.constant(data_files))
@@ -659,6 +662,10 @@ class Problem(object):
     dataset = dataset.map(
         self.maybe_reverse_and_copy, num_parallel_calls=num_threads)
     dataset = dataset.take(max_records)
+
+    ## Shuffle records only for training examples.
+    if shuffle_files and is_training:
+      dataset = dataset.shuffle(shuffle_buffer_size)
     if output_buffer_size:
       dataset = dataset.prefetch(output_buffer_size)
 
@@ -714,23 +721,17 @@ class Problem(object):
     assert self._hparams is not None
 
     hp = self.get_hparams()
-    input_mods = hp.input_modality
-    target_mod = hp.target_modality
-    vocabs = hp.vocabulary
     if self.has_inputs:
       in_id = hp.input_space_id
     out_id = hp.target_space_id
 
     features = collections.defaultdict(FeatureInfo)
+    for feature_name, modality_cls in six.iteritems(hp.modality):
+      finfo = features[feature_name]
+      finfo.modality = modality_cls
+      finfo.vocab_size = modality_cls.top_dimensionality
 
-    for name, mod in six.iteritems(input_mods):
-      finfo = features[name]
-      finfo.modality = mod
-      finfo.vocab_size = mod.top_dimensionality
-
-    features["targets"].modality = target_mod
-    features["targets"].vocab_size = target_mod.top_dimensionality
-
+    vocabs = hp.vocabulary
     for name, encoder in six.iteritems(vocabs):
       features[name].encoder = encoder
 
@@ -832,7 +833,15 @@ class Problem(object):
     else:
       num_threads = cpu_count() if is_training else 1
 
+    if config and hasattr(config,
+                          "data_parallelism") and config.data_parallelism:
+      num_shards = config.data_parallelism.n
+    else:
+      num_shards = 1
+
     max_length = self.max_length(hparams)
+    mlperf_log.transformer_print(
+        key=mlperf_log.INPUT_MAX_LENGTH, value=max_length)
 
     def tpu_valid_size(example):
       return data_reader.example_valid_size(example, hparams.min_length,
@@ -866,7 +875,7 @@ class Problem(object):
       # Repeat and skip a random number of records
       dataset = dataset.repeat()
 
-    if is_training:
+    if is_training and self.skip_random_fraction_when_training:
       data_files = tf.contrib.slim.parallel_reader.get_data_files(
           self.filepattern(data_dir, mode))
       #  In continuous_train_and_eval when switching between train and
@@ -900,7 +909,6 @@ class Problem(object):
         batch_size = params["batch_size"]
         dataset = dataset.batch(batch_size, drop_remainder=True)
       else:
-        num_shards = config.data_parallelism.n if config else 1
         batch_size = hparams.batch_size * num_shards
         dataset = dataset.batch(batch_size)
     else:
@@ -911,16 +919,26 @@ class Problem(object):
         # on TPU, we use params["batch_size"], which specifies the number of
         # examples across all datashards
         batch_size = params["batch_size"]
-        dataset = dataset.apply(
-            tf.contrib.data.padded_batch_and_drop_remainder(
-                batch_size, padded_shapes))
+        if hparams.pad_batch:
+          tf.logging.warn(
+              "Padding the batch to ensure that remainder eval batches are "
+              "processed. This may lead to incorrect metrics for "
+              "non-zero-padded features, e.g. images. Use a smaller batch "
+              "size that has no remainder in that case.")
+          dataset = dataset.padded_batch(
+              batch_size, padded_shapes, drop_remainder=False)
+          dataset = dataset.map(
+              functools.partial(pad_batch, batch_multiple=batch_size),
+              num_parallel_calls=num_threads)
+        else:
+          dataset = dataset.padded_batch(
+              batch_size, padded_shapes, drop_remainder=True)
       else:
         # On GPU, bucket by length
         dataset = dataset.filter(gpu_valid_size)
-        shard_multiplier = config.data_parallelism.n if config else 1
         batching_scheme = data_reader.hparams_to_batching_scheme(
             hparams,
-            shard_multiplier=shard_multiplier,
+            shard_multiplier=num_shards,
             length_multiplier=self.get_hparams().batch_size_multiplier)
         if hparams.use_fixed_batch_size:
           # Here  batch_size really means examples per datashard.
@@ -932,7 +950,7 @@ class Problem(object):
                 batching_scheme["batch_sizes"]))
 
         if not is_training:
-          batch_multiple = shard_multiplier
+          batch_multiple = num_shards
           if hparams.use_fixed_batch_size:
             # Make sure the last batch has the same fixed size as the rest.
             batch_multiple *= hparams.batch_size
@@ -948,10 +966,19 @@ class Problem(object):
 
     dataset = dataset.map(define_shapes, num_parallel_calls=num_threads)
 
+    # Add shuffling for training batches. This is necessary along with record
+    # level shuffling in the dataset generation. Record shuffling will shuffle
+    # the examples. However, in some cases, it's possible that the shuffle
+    # buffer size for record shuffling is smaller than the batch size. In such
+    # cases, adding batch shuffling ensures that the data is in random order
+    # during training
+    if (is_training and hasattr(hparams, "batch_shuffle_size") and
+        hparams.batch_shuffle_size):
+      dataset = dataset.shuffle(hparams.batch_shuffle_size)
+
     def prepare_for_output(example):
       if not config or not config.use_tpu:
-        _summarize_features(example,
-                            (config and config.data_parallelism.n) or 1)
+        _summarize_features(example, num_shards)
       if mode == tf.estimator.ModeKeys.PREDICT:
         example["infer_targets"] = example.pop("targets")
         return example
@@ -1049,7 +1076,9 @@ def _copy_problem_hparams(p_hparams):
   """Use input modality, vocab, and space id for target."""
   p = p_hparams
   # Duplicate input modality.
-  p.target_modality = p.input_modality["inputs"]
+  p.modality["targets"] = p.modality["inputs"]
+  # Duplicate input vocab size.
+  p.vocab_size["targets"] = p.vocab_size["inputs"]
   # Duplicate input vocabulary.
   p.vocabulary["targets"] = p.vocabulary["inputs"]
   # Duplicate input space ids.
@@ -1063,13 +1092,31 @@ def _reverse_problem_hparams(p_hparams):
   p = p_hparams
 
   # Swap modalities.
-  input_modality = p.input_modality.get("inputs")
-  target_modality = p.target_modality
-  p.target_modality = input_modality
-  if target_modality is not None:
-    p.input_modality["inputs"] = target_modality
-  else:
-    p.input_modality = {}
+  # TODO(trandustin): Note this assumes target modalities have feature name
+  # 'target', and each intended feature to swap has feature name 'input'.
+  # In the future, remove need for this behavior.
+  reversed_modality = {}
+  for feature_name in six.iterkeys(p.modality):
+    reversed_feature_name = feature_name.replace("target", "input")
+    if "target" in feature_name and reversed_feature_name in p.modality:
+      reversed_modality[feature_name] = p.modality[reversed_feature_name]
+      reversed_modality[reversed_feature_name] = p.modality[feature_name]
+    else:
+      reversed_modality[feature_name] = p.modality[feature_name]
+
+  p.modality = reversed_modality
+
+  # Swap vocab sizes.
+  reversed_vocab_size = {}
+  for feature_name in six.iterkeys(p.vocab_size):
+    reversed_feature_name = feature_name.replace("target", "input")
+    if "target" in feature_name and reversed_feature_name in p.vocab_size:
+      reversed_vocab_size[feature_name] = p.vocab_size[reversed_feature_name]
+      reversed_vocab_size[reversed_feature_name] = p.vocab_size[feature_name]
+    else:
+      reversed_vocab_size[feature_name] = p.vocab_size[feature_name]
+
+  p.vocab_size = reversed_vocab_size
 
   # Swap vocabularies.
   input_vocabulary = p.vocabulary.pop("inputs", None)
@@ -1096,80 +1143,25 @@ def _reverse_problem_hparams(p_hparams):
 
 
 def _create_modalities(problem_hparams, hparams):
-  """Converts string-type modalities to their corresponding Modality.
+  """Creates modalities and overrides any according to model hparams.
 
   Args:
     problem_hparams: tf.contrib.training.HParams for the Problem. It must have
-      input_modality and target_modality as attributes. Modalities are either
-      tuples of type ("modality_type:modality_name", vocab_size), and they will
-      be converted to Modality objects; or they are already Modality objects,
-      and they remain the same.
+      modality which is a dict of strings to Modality classes.
     hparams: tf.contrib.training.HParams for the model. It may have
       input_modalities and target_modality, which will override
-      problem_hparams' modalities.
+      problem_hparams' modality input and target keys.
 
   Returns:
     None
   """
-  input_modality_overrides = {}
-  if hasattr(hparams, "input_modalities"):
-    for override_str in hparams.input_modalities.split(";"):
-      if override_str != "default":
-        parts = override_str.split(":")
-        feature_name = parts[0]
-        modality_name = ":".join(parts[1:])
-        input_modality_overrides[feature_name] = modality_name
-
-  input_modality = {}
-  for feature_name, modality in six.iteritems(problem_hparams.input_modality):
-    if isinstance(modality, (list, tuple)):
-      if feature_name in input_modality_overrides:
-        _warn_changed_modality_type(input_modality_overrides[feature_name],
-                                    modality[0],
-                                    feature_name)
-        modality = (input_modality_overrides[feature_name], modality[1])
-      modality = modalities.create_modality(modality, hparams)
-    input_modality[feature_name] = modality
-  problem_hparams.input_modality = input_modality
-
-  target_modality_name = None
-  if (hasattr(hparams, "target_modality") and
-      hparams.target_modality != "default"):
-    target_modality_name = hparams.target_modality
-
-  if isinstance(problem_hparams.target_modality, dict):
-    target_modality = {}
-    for feature_name, modality in six.iteritems(
-        problem_hparams.target_modality):
-      if isinstance(modality, (list, tuple)):
-        # TODO(lukaszkaiser): allow overriding other target modalities.
-        if target_modality_name and feature_name == "targets":
-          _warn_changed_modality_type(target_modality_name,
-                                      modality[0],
-                                      "target_modality/%s" % feature_name)
-          modality = (target_modality_name, modality[1])
-        modality = modalities.create_modality(modality, hparams)
-      target_modality[feature_name] = modality
-    problem_hparams.target_modality = target_modality
-  elif isinstance(problem_hparams.target_modality, (list, tuple)):
-    modality = problem_hparams.target_modality
-    if target_modality_name:
-      _warn_changed_modality_type(target_modality_name,
-                                  modality[0],
-                                  "target")
-      modality = (target_modality_name, modality[1])
-    modality = modalities.create_modality(modality, hparams)
-    problem_hparams.target_modality = modality
-
-
-def _warn_changed_modality_type(new_name, old_name, feature_name):
-  new_type, new_name = modalities.parse_modality_name(new_name)
-  old_type, old_name = modalities.parse_modality_name(old_name)
-  if new_type != old_type:
-    tf.logging.warn(
-        "%s has a designated modality type %s (%s) but has been "
-        "overridden with a modality of type %s (%s).", feature_name, old_type,
-        old_name, new_type, new_name)
+  modality_overrides = getattr(hparams, "modality", {})
+  modality = {}
+  for feature_name, modality_cls in six.iteritems(problem_hparams.modality):
+    vocab_size = problem_hparams.vocab_size[feature_name]
+    modality_cls = modality_overrides.get(feature_name, modality_cls)
+    modality[feature_name] = modality_cls(hparams, vocab_size)
+  problem_hparams.modality = modality
 
 
 def _default_hparams():
@@ -1194,17 +1186,10 @@ def _default_hparams():
       # token.
       stop_at_eos=False,
 
-      # Modalities used to map from input features to a space compatible with
-      # chosen model architecture.  One modality spec (which is a 2-tuple,
-      # (modality_full_name, vocab_size)) per feature key. modality_full_name
-      # is a string type:name, e.g. class_label:class_label_2d. Leaving off
-      # the name uses the default modality for that type (e.g. class_label ==
-      # class_label:default).
-      input_modality={},
-
-      # Modality used to map from hidden representation to the target space.
-      # Specified as a modality spec, a 2-tuple described above.
-      target_modality=None,
+      # Modalities used to map from features to a space compatible with
+      # chosen model architecture. It comprises key-value pairs of a feature
+      # name (str) and its modality class.
+      modality={},
 
       # Identifiers used to tell the model which input/target space will be
       # expected. For example, it can tell that we expect French as characters

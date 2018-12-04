@@ -12,19 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Param sets for deterministic basic next frame prediction model."""
 
 from __future__ import division
 from __future__ import print_function
 
-from tensor2tensor.layers import common_hparams
+from tensor2tensor.layers import modalities
+from tensor2tensor.models.video import base
 from tensor2tensor.utils import registry
 
 
 @registry.register_hparams
 def next_frame_basic_deterministic():
   """Basic 2-frame conv model."""
-  hparams = common_hparams.basic_params1()
+  hparams = base.next_frame_base()
   hparams.video_num_input_frames = 4
   hparams.video_num_target_frames = 1
   hparams.hidden_size = 64
@@ -32,24 +34,19 @@ def next_frame_basic_deterministic():
   hparams.num_hidden_layers = 2
   hparams.optimizer = "Adafactor"
   hparams.learning_rate_constant = 1.5
-  hparams.learning_rate_warmup_steps = 1500
+  hparams.learning_rate_warmup_steps = 8000
   hparams.learning_rate_schedule = "linear_warmup * constant * rsqrt_decay"
   hparams.label_smoothing = 0.0
   hparams.initializer = "uniform_unit_scaling"
   hparams.initializer_gain = 1.3
   hparams.weight_decay = 0.0
   hparams.clip_grad_norm = 1.0
-  hparams.dropout = 0.5
-  hparams.add_hparam("per_pixel_softmax", True)
-  # choose from: concat, multiplicative, multi_additive
-  hparams.add_hparam("action_injection", "multi_additive")
+  hparams.dropout = 0.1
+  hparams.add_hparam("residual_dropout", 0.5)
   hparams.add_hparam("num_compress_steps", 6)
   hparams.add_hparam("filter_double_steps", 2)
-  hparams.add_hparam("video_modality_loss_cutoff", 0.02)
-  hparams.add_hparam("preprocess_resize_frames", None)
-  hparams.add_hparam("shuffle_buffer_size", 128)
-  hparams.add_hparam("tiny_mode", False)
-  hparams.add_hparam("stochastic_model", False)
+  hparams.add_hparam("pixel_sampling_temperature", 0.0)
+  hparams.add_hparam("concat_internal_states", False)
   return hparams
 
 
@@ -58,7 +55,7 @@ def next_frame_pixel_noise():
   """Basic 2-frame conv model with pixel noise."""
   hparams = next_frame_basic_deterministic()
   hparams.add_hparam("video_modality_input_noise", 0.05)
-  hparams.input_modalities = "inputs:video:pixel_noise"
+  hparams.modality["inputs"] = modalities.VideoModalityPixelNoise
   return hparams
 
 
@@ -66,9 +63,9 @@ def next_frame_pixel_noise():
 def next_frame_sampling():
   """Basic conv model with scheduled sampling."""
   hparams = next_frame_basic_deterministic()
-  hparams.video_num_target_frames = 4
-  hparams.scheduled_sampling_warmup_steps = 50000
-  hparams.scheduled_sampling_prob = 0.5
+  hparams.scheduled_sampling_mode = "prob_inverse_exp"
+  hparams.scheduled_sampling_max_prob = 1.0
+  hparams.scheduled_sampling_decay_steps = 10000
   return hparams
 
 
@@ -83,11 +80,21 @@ def next_frame_tpu():
 def next_frame_ae():
   """Conv autoencoder."""
   hparams = next_frame_basic_deterministic()
-  hparams.input_modalities = "inputs:video:bitwise"
+  hparams.modality["inputs"] = modalities.VideoModalityBitwise
   hparams.hidden_size = 256
   hparams.batch_size = 8
   hparams.num_hidden_layers = 4
   hparams.num_compress_steps = 4
+  hparams.dropout = 0.4
+  return hparams
+
+
+@registry.register_hparams
+def next_frame_ae_tiny():
+  """Conv autoencoder, tiny set for testing."""
+  hparams = next_frame_tiny()
+  hparams.modality["inputs"] = modalities.VideoModalityBitwise
+  hparams.batch_size = 8
   hparams.dropout = 0.4
   return hparams
 
@@ -115,7 +122,7 @@ def next_frame_tiny():
 def next_frame_l1():
   """Basic conv model with L1 modality."""
   hparams = next_frame_basic_deterministic()
-  hparams.target_modality = "video:l1"
+  hparams.modality["targets"] = modalities.VideoModalityL1
   hparams.video_modality_loss_cutoff = 2.4
   return hparams
 
@@ -124,7 +131,7 @@ def next_frame_l1():
 def next_frame_l2():
   """Basic conv model with L2 modality."""
   hparams = next_frame_basic_deterministic()
-  hparams.target_modality = "video:l2"
+  hparams.modality["targets"] = modalities.VideoModalityL2
   hparams.video_modality_loss_cutoff = 2.4
   return hparams
 

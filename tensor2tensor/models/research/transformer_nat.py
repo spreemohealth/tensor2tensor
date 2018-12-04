@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """NAT Transformer from https://arxiv.org/abs/1805.11063."""
 from __future__ import absolute_import
 from __future__ import division
@@ -326,10 +327,6 @@ class TransformerNAT(t2t_model.T2TModel):
     self._hparams.means = means
     self._hparams.ema_means = ema_means
     self._hparams.ema_count = ema_count
-
-  @property
-  def has_input(self):
-    return self._problem_hparams.input_modality
 
   def body(self, features):
     inputs = features["inputs"] if "inputs" in features else None

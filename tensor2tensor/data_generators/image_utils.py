@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Base classes and utilities for image datasets."""
 
 from __future__ import absolute_import
@@ -26,8 +27,8 @@ from tensor2tensor.data_generators import generator_utils
 from tensor2tensor.data_generators import problem
 from tensor2tensor.data_generators import text_encoder
 from tensor2tensor.layers import common_layers
+from tensor2tensor.layers import modalities
 from tensor2tensor.utils import metrics
-from tensor2tensor.utils import registry
 
 import tensorflow as tf
 
@@ -240,8 +241,10 @@ class Image2ClassProblem(ImageProblem):
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
-    p.input_modality = {"inputs": (registry.Modalities.IMAGE, 256)}
-    p.target_modality = (registry.Modalities.CLASS_LABEL, self.num_classes)
+    p.modality = {"inputs": modalities.ImageModality,
+                  "targets": modalities.ClassLabelModality}
+    p.vocab_size = {"inputs": 256,
+                    "targets": self.num_classes}
     p.batch_size_multiplier = 4 if self.is_small else 256
     p.loss_multiplier = 3.0 if self.is_small else 1.0
     if self._was_reversed:
@@ -352,9 +355,10 @@ class Image2TextProblem(ImageProblem):
 
   def hparams(self, defaults, unused_model_hparams):
     p = defaults
-    p.input_modality = {"inputs": (registry.Modalities.IMAGE, 256)}
-    encoder = self._encoders["targets"]
-    p.target_modality = (registry.Modalities.SYMBOL, encoder.vocab_size)
+    p.modality = {"inputs": modalities.ImageModality,
+                  "targets": modalities.SymbolModality}
+    p.vocab_size = {"inputs": 256,
+                    "targets": self._encoders["targets"].vocab_size}
     p.batch_size_multiplier = 256
     p.loss_multiplier = 1.0
     p.input_space_id = problem.SpaceID.IMAGE

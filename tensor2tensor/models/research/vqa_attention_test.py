@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """Vqa_attention_baseline tests."""
 
 from __future__ import absolute_import
@@ -46,10 +47,10 @@ class VqaAttentionBaselineTest(tf.test.TestCase):
     p_hparams = problem_hparams.test_problem_hparams(vocab_size,
                                                      vocab_size,
                                                      hparams)
-    p_hparams.input_modality["inputs"] = modalities.ImageModality(hparams)
-    p_hparams.input_modality["question"] = modalities.SymbolModality(
+    p_hparams.modality["inputs"] = modalities.ImageModality(hparams)
+    p_hparams.modality["question"] = modalities.SymbolModality(
         hparams, vocab_size)
-    p_hparams.target_modality = modalities.MultiLabelModality(
+    p_hparams.modality["targets"] = modalities.MultiLabelModality(
         hparams, num_classes + 1)
     with self.test_session() as session:
       features = {
