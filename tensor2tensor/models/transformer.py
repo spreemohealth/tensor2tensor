@@ -1075,11 +1075,12 @@ def fast_decode(encoder_output,
     hit_eos = tf.fill([batch_size], False)
     next_id = sos_id * tf.ones([batch_size, 1], dtype=tf.int64)
     initial_log_prob = tf.zeros([batch_size], dtype=tf.float32)
-    _, _, _, decoded_ids, cache, log_prob = tf.while_loop(
+    initial_logits = tf.zeros([batch_size,0,1,1,vocab_size])
+    _, _, _, decoded_ids, _, log_prob,logits = tf.while_loop(
         is_not_finished,
         inner_loop, [
             tf.constant(0), hit_eos, next_id, decoded_ids, cache,
-            initial_log_prob
+            initial_log_prob,initial_logits
         ],
         shape_invariants=[
             tf.TensorShape([]),
@@ -1088,6 +1089,7 @@ def fast_decode(encoder_output,
             tf.TensorShape([None, None]),
             nest.map_structure(beam_search.get_state_shape_invariants, cache),
             tf.TensorShape([None]),
+            tf.TensorShape([None, None,1,1,vocab_size]),
         ])
     scores = log_prob
     return {"outputs": decoded_ids, "scores": scores,'logits':logits}
