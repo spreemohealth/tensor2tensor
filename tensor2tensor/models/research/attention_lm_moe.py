@@ -512,6 +512,7 @@ def attention_lm_moe_base():
   # if True, we learn a non-autoregressive model from "inputs" to "targets".
   # if False, we learn an autoregressive model to generate "targets"
   hparams.add_hparam("use_inputs", False)
+  expert_utils.update_hparams_for_vq_gating(hparams)
   return hparams
 
 

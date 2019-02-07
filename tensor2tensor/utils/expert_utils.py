@@ -1027,11 +1027,11 @@ def local_moe(x,
       training loss of the model.  The backpropagation of this loss
       encourages all experts to be approximately equally used across a batch.
   """
-  bneck = DiscreteBottleneck(hparams)
+  #bneck = DiscreteBottleneck(hparams)
   with tf.variable_scope(name, default_name="local_moe"):
     centroids = None
     x_flat = flatten_all_but_last(x)
-    if hparams.gating_type == "topk":
+    if not hparams or hparams.gating_type == "topk":
       tf.logging.info("Using noisy top_k with k = {}".format(k))
       # The gates indicate which batch elements go to which tensors.
       # load is a measure of approximately how many examples go to each expert
@@ -1046,6 +1046,7 @@ def local_moe(x,
       importance = tf.reduce_sum(gates, 0)
       loss = loss_coef * (cv_squared(importance) + cv_squared(load))
     else:
+      bneck = DiscreteBottleneck(hparams)
       assert hparams.gating_type == "vq"
       tf.logging.info("Using VQ gating")
       gates, loss, centroids = vq_gating(

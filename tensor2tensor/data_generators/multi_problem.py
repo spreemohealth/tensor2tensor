@@ -381,6 +381,49 @@ class MultiProblem(problem.Problem):
                             hparams.multiproblem_mixing_schedule))
         tf.logging.info("Schedule mixing threshold "
                         "%.2f" % hparams.multiproblem_schedule_threshold)
+        prob = tf.cond(
+            tf.equal(tf.floormod(
+                problem_step, tf.cast(5e6, dtype=tf.int64)), 0),
+            lambda: tf.Print(prob, [prob], message="Probability"),
+            lambda: prob)
+        probs = tf.stack([1-prob]+[prob/(len(self.task_list)-1)]*(len(self.task_list)-1))
+        return probs
+      
+      prob_set = problem_step.map(sched_prob,1)
+
+      #  def sample_task(curr_task, num_tasks_left, randnum):
+      #      """A recursive function to sample a task.
+
+      #      This function treats the probability as the threshold for the primary
+      #      task and divides the remaining probability mass across the other
+      #      tasks.
+
+      #      Args:
+      #        curr_task: The index of the task being considered for sampling.
+      #        num_tasks_left: Number of tasks remaining to possibly sample from.
+      #        randnum: The random number used to select the dataset.
+
+      #      Returns:
+      #        A Tensor representing an example from the task that was sampled
+      #        from.
+      #      """
+      #      if num_tasks_left == 0:
+      #        return get_next_from_dataset(dataset_iterators[curr_task])
+
+      #      # When curr_task is 0, the primary task, the new prob is the same as
+      #      # the original probability. `tf.greater` indicates that the primary
+      #      # task receives (1-prob) of the probability mass.
+      #      # Otherwise, `prob` is divided equally amongst all the secondary
+      #      # tasks.
+      #      new_prob = prob - (curr_task * prob / (len(self.task_list)-1))
+      #      return tf.cond(
+      #          tf.greater(randnum, new_prob),
+      #          lambda: get_next_from_dataset(dataset_iterators[curr_task]),
+      #          lambda: sample_task(curr_task+1, num_tasks_left-1, randnum)
+      #      )
+
+      #    return tf.data.Dataset.from_tensors(
+      #        sample_task(0, len(self.task_list)-1, tf.random_uniform([])))
 
       single_mtl_dataset = tf.contrib.data.sample_from_datasets(datasets,prob_set)
 
