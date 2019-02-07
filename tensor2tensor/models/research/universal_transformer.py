@@ -367,6 +367,8 @@ def update_hparams_for_universal_transformer(hparams):
 
   # Number of vanilla transformer layers used to be mixed with u-transofmer.
   hparams.add_hparam("num_mixedin_layers", 2)
+  # Number of transformer layers within the recurrent block (default is 1).
+  hparams.add_hparam("num_inrecurrence_layers",1)
 
   # Type of recurrency:
   # basic, highway, skip, dwa, act, rnn, gru, lstm.

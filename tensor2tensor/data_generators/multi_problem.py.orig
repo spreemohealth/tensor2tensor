@@ -211,6 +211,7 @@ class MultiProblem(problem.Problem):
     self.get_hparams(model_hparams=hparams)
 
     if is_training:
+<<<<<<< HEAD
       # problem_step = tf.get_variable("problem_step",
       #                                shape=[],
       #                                dtype=tf.int64,
@@ -323,6 +324,29 @@ class MultiProblem(problem.Problem):
             max_step=hparams.multiproblem_schedule_max_examples,
             min_value=1e-4,
             step = tf.to_float(problem_step)
+=======
+      # Using tf.Variable instead of get_variable to work around issues with
+      # queues on multiple hosts. Note that this will separately count steps
+      # on each host that's feeding the data, so in a large-scale setting you
+      # may need to adjust hparams for that. For example, a 4x4 slice of a TPU
+      # pod may use 2 data hosts, so we'll be only adding 1 here once for 2
+      # examples -- divide the corresponding hparams by 2 to compensate.
+      problem_step = tf.Variable(tf.constant(0, dtype=tf.int64),
+                                 trainable=False, use_resource=True,
+                                 dtype=tf.int64, name="problem_step")
+      dataset_iterators = [d.make_one_shot_iterator() for d in datasets]
+
+      def get_next_from_dataset(dataset_iter):
+        return dataset_iter.get_next()
+
+      def get_exp_sched_prob():
+        """Inverse decay exponential to mix datasets."""
+        with tf.control_dependencies([problem_step.assign_add(1)]):
+          inv_exp_decay = common_layers.inverse_exp_decay(
+              max_step=hparams.multiproblem_schedule_max_examples,
+              min_value=1e-4,
+              step=tf.to_float(problem_step)
+>>>>>>> 1eae64e8d50227d86da56be299e3226ae0ef2101
           )
         return inv_exp_decay * hparams.multiproblem_schedule_threshold
 
@@ -339,7 +363,16 @@ class MultiProblem(problem.Problem):
 
       def sched_prob(problem_step):
         if hparams.multiproblem_mixing_schedule == MixingSchedule.EXPONENTIAL:
+<<<<<<< HEAD
           prob = exp_sched_prob(problem_step)
+=======
+          prob = get_exp_sched_prob()
+          prob = tf.cond(
+              tf.equal(tf.floormod(
+                  problem_step, tf.cast(5e6, dtype=tf.int64)), 0),
+              lambda: tf.Print(prob, [prob], message="Probability"),
+              lambda: prob)
+>>>>>>> 1eae64e8d50227d86da56be299e3226ae0ef2101
         elif hparams.multiproblem_mixing_schedule == MixingSchedule.CONSTANT:
           prob = const_sched_prob(problem_step)
         elif hparams.multiproblem_mixing_schedule == MixingSchedule.PRETRAIN:
@@ -352,6 +385,7 @@ class MultiProblem(problem.Problem):
                             hparams.multiproblem_mixing_schedule))
         tf.logging.info("Schedule mixing threshold "
                         "%.2f" % hparams.multiproblem_schedule_threshold)
+<<<<<<< HEAD
         prob = tf.cond(
             tf.equal(tf.floormod(
                 problem_step, tf.cast(5e6, dtype=tf.int64)), 0),
@@ -359,42 +393,44 @@ class MultiProblem(problem.Problem):
             lambda: prob)
         probs = tf.stack([1-prob]+[prob/(len(self.task_list)-1)]*(len(self.task_list)-1))
         return probs
-      
+
       prob_set = problem_step.map(sched_prob,1)
+=======
 
-      #  def sample_task(curr_task, num_tasks_left, randnum):
-      #      """A recursive function to sample a task.
+        def sample_task(curr_task, num_tasks_left, randnum):
+          """A recursive function to sample a task.
 
-      #      This function treats the probability as the threshold for the primary
-      #      task and divides the remaining probability mass across the other
-      #      tasks.
+          This function treats the probability as the threshold for the primary
+          task and divides the remaining probability mass across the other
+          tasks.
 
-      #      Args:
-      #        curr_task: The index of the task being considered for sampling.
-      #        num_tasks_left: Number of tasks remaining to possibly sample from.
-      #        randnum: The random number used to select the dataset.
+          Args:
+            curr_task: The index of the task being considered for sampling.
+            num_tasks_left: Number of tasks remaining to possibly sample from.
+            randnum: The random number used to select the dataset.
 
-      #      Returns:
-      #        A Tensor representing an example from the task that was sampled
-      #        from.
-      #      """
-      #      if num_tasks_left == 0:
-      #        return get_next_from_dataset(dataset_iterators[curr_task])
+          Returns:
+            A Tensor representing an example from the task that was sampled
+            from.
+          """
+          if num_tasks_left == 0:
+            return get_next_from_dataset(dataset_iterators[curr_task])
 
-      #      # When curr_task is 0, the primary task, the new prob is the same as
-      #      # the original probability. `tf.greater` indicates that the primary
-      #      # task receives (1-prob) of the probability mass.
-      #      # Otherwise, `prob` is divided equally amongst all the secondary
-      #      # tasks.
-      #      new_prob = prob - (curr_task * prob / (len(self.task_list)-1))
-      #      return tf.cond(
-      #          tf.greater(randnum, new_prob),
-      #          lambda: get_next_from_dataset(dataset_iterators[curr_task]),
-      #          lambda: sample_task(curr_task+1, num_tasks_left-1, randnum)
-      #      )
+          # When curr_task is 0, the primary task, the new prob is the same as
+          # the original probability. `tf.greater` indicates that the primary
+          # task receives (1-prob) of the probability mass.
+          # Otherwise, `prob` is divided equally amongst all the secondary
+          # tasks.
+          new_prob = prob - (curr_task * prob / (len(self.task_list)-1))
+          return tf.cond(
+              tf.greater(randnum, new_prob),
+              lambda: get_next_from_dataset(dataset_iterators[curr_task]),
+              lambda: sample_task(curr_task+1, num_tasks_left-1, randnum)
+          )
 
-      #    return tf.data.Dataset.from_tensors(
-      #        sample_task(0, len(self.task_list)-1, tf.random_uniform([])))
+        return tf.data.Dataset.from_tensors(
+            sample_task(0, len(self.task_list)-1, tf.random_uniform([])))
+>>>>>>> 1eae64e8d50227d86da56be299e3226ae0ef2101
 
       single_mtl_dataset = tf.contrib.data.sample_from_datasets(datasets,prob_set)
 

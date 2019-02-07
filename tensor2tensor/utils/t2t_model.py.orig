@@ -379,8 +379,6 @@ class T2TModel(base.Layer):
         else:
           variable_scope_name = modality_obj.name
         # TODO(aidangomez): share variables?
-        print(feature_name)
-        print(variable_scope_name)
         with tf.variable_scope(variable_scope_name) as vs:
           self._add_variable_scope(variable_scope_name, vs)
           log_info("Transforming feature '%s' with %s.targets_bottom",
@@ -814,8 +812,13 @@ class T2TModel(base.Layer):
         decode_length,
         vocab_size,
         alpha,
+<<<<<<< HEAD
         eos_id = self._decode_hparams.get('eos_id',beam_search.EOS_ID),
         stop_early=(top_beams == 1))
+=======
+        stop_early=(top_beams == 1),
+        use_tpu=use_tpu)
+>>>>>>> 1eae64e8d50227d86da56be299e3226ae0ef2101
 
     # Set inputs back to the unexpanded inputs to not to confuse the Estimator!
     if self.has_input:
@@ -1340,7 +1343,7 @@ class T2TModel(base.Layer):
     # TRAIN and EVAL modes
     if hparams.eval_run_autoregressive and (mode == tf.estimator.ModeKeys.EVAL):
       logits, losses_dict = model.eval_autoregressive(features)
-    # elif hparams.eval_run_autoregressive and (mode == tf.estimator.ModeKeys.TRAIN):
+    elif hparams.eval_run_autoregressive and (mode == tf.estimator.ModeKeys.TRAIN):
       # targets_length = common_layers.shape_list(features['targets'])[1]
       # input_length = common_layers.shape_list(features['inputs'])[1]
       # model._fill_problem_hparams_features(features)
