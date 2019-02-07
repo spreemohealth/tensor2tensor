@@ -859,7 +859,6 @@ class Problem(object):
         "partition_id": partition_id,
         "num_partitions": num_partitions,
     })
-<<<<<<< HEAD
     return data_reader.input_fn(
         self.dataset(**dataset_kwargs),
         self.filepattern(data_dir, mode),
@@ -874,117 +873,6 @@ class Problem(object):
         config=config,
         force_repeat=force_repeat,
         prevent_repeat=prevent_repeat)
-=======
-
-    dataset = self.dataset(**dataset_kwargs)
-    if (force_repeat or is_training) and not prevent_repeat:
-      # Repeat and skip a random number of records
-      dataset = dataset.repeat()
-
-    if is_training:
-      data_files = tf.contrib.slim.parallel_reader.get_data_files(
-          self.filepattern(data_dir, mode))
-      #  In continuous_train_and_eval when switching between train and
-      #  eval, this input_fn method gets called multiple times and it
-      #  would give you the exact same samples from the last call
-      #  (because the Graph seed is set). So this skip gives you some
-      #  shuffling.
-      dataset = skip_random_fraction(dataset, data_files[0])
-
-    dataset = dataset.map(
-        data_reader.cast_ints_to_int32, num_parallel_calls=num_threads)
-
-    print('Output Shapes:',dataset.output_shapes)
-
-    if self.batch_size_means_tokens:
-      batch_size_means_tokens = True
-    else:
-      if _are_shapes_fully_defined(dataset.output_shapes):
-        batch_size_means_tokens = False
-      else:
-        tf.logging.warning(
-            "Shapes are not fully defined. Assuming batch_size means tokens.")
-        batch_size_means_tokens = True
-
-    # Batching
-    if not batch_size_means_tokens:
-      # Batch size means examples per datashard.
-      if config and config.use_tpu:
-        # on TPU, we use params["batch_size"], which specifies the number of
-        # examples across all datashards
-        batch_size = params["batch_size"]
-        dataset = dataset.batch(batch_size, drop_remainder=True)
-      else:
-        num_shards = config.data_parallelism.n if config else 1
-        batch_size = hparams.batch_size * num_shards
-        dataset = dataset.batch(batch_size)
-    else:
-      # batch_size means tokens per datashard
-      if config and config.use_tpu:
-        dataset = dataset.filter(tpu_valid_size)
-        padded_shapes = self._pad_for_tpu(dataset.output_shapes, hparams)
-        # on TPU, we use params["batch_size"], which specifies the number of
-        # examples across all datashards
-        batch_size = params["batch_size"]
-        dataset = dataset.apply(
-            tf.contrib.data.padded_batch_and_drop_remainder(
-                batch_size, padded_shapes))
-      else:
-        # On GPU, bucket by length
-        dataset = dataset.filter(gpu_valid_size)
-        shard_multiplier = config.data_parallelism.n if config else 1
-        batching_scheme = data_reader.hparams_to_batching_scheme(
-            hparams,
-            shard_multiplier=shard_multiplier,
-            length_multiplier=self.get_hparams().batch_size_multiplier)
-        if hparams.use_fixed_batch_size:
-          # Here  batch_size really means examples per datashard.
-          batching_scheme["batch_sizes"] = [hparams.batch_size]
-          batching_scheme["boundaries"] = []
-        dataset = dataset.apply(
-            tf.contrib.data.bucket_by_sequence_length(
-                data_reader.example_length, batching_scheme["boundaries"],
-                batching_scheme["batch_sizes"]))
-
-        if not is_training:
-          batch_multiple = shard_multiplier
-          if hparams.use_fixed_batch_size:
-            # Make sure the last batch has the same fixed size as the rest.
-            batch_multiple *= hparams.batch_size
-          if batch_multiple > 1:
-            tf.logging.warn(
-                "Padding the batch to ensure that remainder eval batches have "
-                "a batch size divisible by the number of data shards. This may "
-                "lead to incorrect metrics for non-zero-padded features, e.g. "
-                "images. Use a single datashard (i.e. 1 GPU) in that case.")
-            dataset = dataset.map(
-                functools.partial(pad_batch, batch_multiple=batch_multiple),
-                num_parallel_calls=num_threads)
-
-    dataset = dataset.map(define_shapes, num_parallel_calls=num_threads)
-
-    def prepare_for_output(example):
-      if not config or not config.use_tpu:
-        _summarize_features(example,
-                            (config and config.data_parallelism.n) or 1)
-      if mode == tf.estimator.ModeKeys.PREDICT:
-        example["infer_targets"] = example.pop("targets")
-        return example
-      else:
-        return example, example["targets"]
-
-    dataset = dataset.map(prepare_for_output, num_parallel_calls=num_threads)
-    dataset = dataset.prefetch(2)
-
-    if mode == tf.estimator.ModeKeys.PREDICT:
-      # This is because of a bug in the Estimator that short-circuits prediction
-      # if it doesn't see a QueueRunner. DummyQueueRunner implements the
-      # minimal expected interface but does nothing.
-      tf.add_to_collection(tf.GraphKeys.QUEUE_RUNNERS,
-                           data_reader.DummyQueueRunner())
-
-    return dataset
->>>>>>> 3935f4c3... autoregressive eval and training
 
   @property
   def export_assets(self):
