@@ -32,7 +32,7 @@ from tensor2tensor.utils import mlperf_log
 from tensor2tensor.utils import registry
 from tensor2tensor.utils import trainer_lib
 from tensor2tensor.utils import usr_dir
-from tensor2tensor.v2 import t2t as t2t_v2
+#from tensor2tensor.v2 import t2t as t2t_v2
 import tensorflow as tf
 
 from tensorflow.contrib.tpu.python.tpu import tpu_config
